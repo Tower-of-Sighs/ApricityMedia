@@ -12,9 +12,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import java.util.ArrayList;
 import java.util.UUID;
 
-@Mixin(Document.class)
+@Mixin(value = Document.class, remap = false)
 public class DocumentCleanupMixin {
-    @Inject(method = "remove(Ljava/lang/String;)V", at = @At("HEAD"))
+    @Inject(method = "remove(Ljava/lang/String;)V", at = @At("HEAD"), remap = false)
     private static void auiVideo$beforeRemoveByPath(String path, CallbackInfo ci) {
         ArrayList<Document> targets = Document.get(path);
         for (Document document : targets) {
@@ -22,7 +22,7 @@ public class DocumentCleanupMixin {
         }
     }
 
-    @Inject(method = "remove(Ljava/util/UUID;)V", at = @At("HEAD"))
+    @Inject(method = "remove(Ljava/util/UUID;)V", at = @At("HEAD"), remap = false)
     private static void auiVideo$beforeRemoveByUuid(UUID uuid, CallbackInfo ci) {
         for (Document document : Document.getAll()) {
             if (document.is(uuid)) {

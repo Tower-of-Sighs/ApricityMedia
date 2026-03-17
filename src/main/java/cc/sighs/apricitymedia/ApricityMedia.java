@@ -1,13 +1,22 @@
 package cc.sighs.apricitymedia;
 
+import cc.sighs.apricitymedia.client.ApricityMediaClient;
 import com.sighs.apricityui.registry.ApricityUIRegistry;
-import net.fabricmc.api.ModInitializer;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import net.minecraftforge.fml.loading.FMLEnvironment;
 
-public class ApricityMedia implements ModInitializer {
+@Mod(ApricityMedia.MOD_ID)
+public class ApricityMedia {
+    public static final String MOD_ID = "apricitymedia";
 
-    @Override
-    public void onInitialize() {
+    public ApricityMedia() {
         FFmpegRuntimeBootstrap.prewarmAsync();
-        ApricityUIRegistry.scanPackage("cc.sighs.auivideo.element");
+        ApricityUIRegistry.scanPackage("cc.sighs.apricitymedia.element");
+
+        if (FMLEnvironment.dist == Dist.CLIENT) {
+            ApricityMediaClient.register(FMLJavaModLoadingContext.get().getModEventBus());
+        }
     }
 }

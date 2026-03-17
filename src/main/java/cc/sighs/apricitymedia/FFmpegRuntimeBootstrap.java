@@ -1,6 +1,6 @@
 package cc.sighs.apricitymedia;
 
-import net.fabricmc.loader.api.FabricLoader;
+import net.minecraftforge.fml.loading.FMLLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -122,8 +122,7 @@ public final class FFmpegRuntimeBootstrap {
 
     private static void prepareDownloaderRuntime() throws Exception {
         String platform = resolvePlatformClassifier();
-        Path runtimeDir = FabricLoader.getInstance()
-                .getGameDir()
+        Path runtimeDir = FMLLoader.getGamePath()
                 .resolve(".apricityui-video")
                 .resolve("runtime")
                 .resolve(FFMPEG_VERSION);
@@ -139,8 +138,8 @@ public final class FFmpegRuntimeBootstrap {
         downloadIfMissing(javacppJar, MAVEN_BASE + "/javacpp/" + JAVACPP_VERSION + "/" + javacppName);
         downloadIfMissing(ffmpegJar, MAVEN_BASE + "/ffmpeg/" + FFMPEG_VERSION + "/" + ffmpegName);
 
-        addToFabricClassPath(javacppJar);
-        addToFabricClassPath(ffmpegJar);
+        addToRuntimeClassPath(javacppJar);
+        addToRuntimeClassPath(ffmpegJar);
     }
 
     private static void loadNatives() throws Exception {
@@ -153,21 +152,13 @@ public final class FFmpegRuntimeBootstrap {
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.swscale"));
     }
 
-    private static void addToFabricClassPath(Path jarPath) throws Exception {
+    private static void addToRuntimeClassPath(Path jarPath) throws Exception {
         if (jarPath == null) return;
         Path absolute = jarPath.toAbsolutePath().normalize();
         String key = absolute.toString();
         synchronized (CLASS_PATH_ADDED) {
             if (CLASS_PATH_ADDED.contains(key)) return;
-            Class<?> launcherBaseClass = Class.forName("net.fabricmc.loader.impl.launch.FabricLauncherBase");
-            Object launcher = launcherBaseClass.getMethod("getLauncher").invoke(null);
-            if (launcher == null) return;
-            boolean added = tryAddToLauncherClassPath(launcher, absolute);
-            if (!added) {
-                Method getTargetClassLoader = launcher.getClass().getMethod("getTargetClassLoader");
-                ClassLoader targetLoader = (ClassLoader) getTargetClassLoader.invoke(launcher);
-                added = tryAddToTargetLoader(targetLoader, absolute);
-            }
+            boolean added = tryAddToKnownClassLoaders(absolute);
             if (!added) {
                 throw new IllegalStateException("Unable to add jar to runtime classpath: " + absolute);
             }
@@ -176,23 +167,18 @@ public final class FFmpegRuntimeBootstrap {
         }
     }
 
-    private static boolean tryAddToLauncherClassPath(Object launcher, Path absolute) {
-        try {
-            Method method = launcher.getClass().getMethod("addToClassPath", Path.class, String[].class);
-            method.invoke(launcher, absolute, new String[0]);
-            return true;
-        } catch (NoSuchMethodException ignored) {
-        } catch (Exception ignored) {
-            return false;
+    private static boolean tryAddToKnownClassLoaders(Path absolute) {
+        Set<ClassLoader> loaders = new HashSet<>();
+        loaders.add(Thread.currentThread().getContextClassLoader());
+        loaders.add(FFmpegRuntimeBootstrap.class.getClassLoader());
+        loaders.add(FMLLoader.class.getClassLoader());
+        loaders.add(ClassLoader.getSystemClassLoader());
+        for (ClassLoader loader : loaders) {
+            if (tryAddToTargetLoader(loader, absolute)) {
+                return true;
+            }
         }
-
-        try {
-            Method method = launcher.getClass().getMethod("addToClassPath", Path.class);
-            method.invoke(launcher, absolute);
-            return true;
-        } catch (Exception ignored) {
-            return false;
-        }
+        return false;
     }
 
     private static boolean tryAddToTargetLoader(ClassLoader loader, Path absolute) {
