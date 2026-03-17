@@ -8,6 +8,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenKeyboardEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.TitleScreen;
@@ -34,27 +35,29 @@ public class ApricityMediaClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        KeyBindingHelper.registerKeyBinding(OPEN_DEMO);
+        if (FabricLoader.getInstance().isDevelopmentEnvironment()) {
+            KeyBindingHelper.registerKeyBinding(OPEN_DEMO);
 
-        ClientTickEvents.END_CLIENT_TICK.register(minecraft -> {
-            while (OPEN_DEMO.consumeClick()) {
-                long now = System.currentTimeMillis();
-                if (now - lastScreenToggleAtMs < 120L) {
-                    continue;
-                }
-                toggleDemoDebounced();
-            }
-            tryShowInitFailTip(minecraft.screen);
-        });
-
-        ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
-            ScreenKeyboardEvents.afterKeyPress(screen).register((Screen target, int keyCode, int scanCode, int modifiers) -> {
-                if (OPEN_DEMO.matches(keyCode, scanCode)) {
-                    lastScreenToggleAtMs = System.currentTimeMillis();
+            ClientTickEvents.END_CLIENT_TICK.register(minecraft -> {
+                while (OPEN_DEMO.consumeClick()) {
+                    long now = System.currentTimeMillis();
+                    if (now - lastScreenToggleAtMs < 120L) {
+                        continue;
+                    }
                     toggleDemoDebounced();
                 }
+                tryShowInitFailTip(minecraft.screen);
             });
-        });
+
+            ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
+                ScreenKeyboardEvents.afterKeyPress(screen).register((Screen target, int keyCode, int scanCode, int modifiers) -> {
+                    if (OPEN_DEMO.matches(keyCode, scanCode)) {
+                        lastScreenToggleAtMs = System.currentTimeMillis();
+                        toggleDemoDebounced();
+                    }
+                });
+            });
+        }
     }
 
     private static void toggleDemoDebounced() {
