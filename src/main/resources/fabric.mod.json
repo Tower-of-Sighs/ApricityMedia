@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "apricitymedia",
+  "version": "${version}",
+  "name": "ApricityMedia",
+  "description": "",
+  "authors": [],
+  "contact": {},
+  "license": "unlicense",
+  "icon": "assets/apricitymedia/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "client": [
+      "cc.sighs.apricitymedia.client.ApricityMediaClient"
+    ],
+    "main": [
+      "cc.sighs.apricitymedia.ApricityMedia"
+    ]
+  },
+  "mixins": [
+    "apricitymedia.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}",
+    "apricityui": "*"
+  }
+}

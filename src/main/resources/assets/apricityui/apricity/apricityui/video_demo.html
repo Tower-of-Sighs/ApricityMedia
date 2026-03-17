@@ -1,0 +1,351 @@
+<body>
+  <div id="overlay">
+    <div id="panel">
+      <div id="header">
+        <div id="titleGroup">
+          <div id="title">ApricityUI Media Demo</div>
+          <div id="subtitle">FFmpeg local + network streaming</div>
+        </div>
+        <div id="hint">K</div>
+      </div>
+
+      <div id="preview">
+        <video id="demoVideo" src="demo.mp4" autoplay loop preload="none" paused="true" decode-width="1280" max-fps="0" drop-frames="true" muted></video>
+        <div id="previewOverlay">
+          <div id="overlayTitle">预览</div>
+          <div id="status">就绪</div>
+        </div>
+      </div>
+
+      <div id="actions">
+        <div id="btnVideo" class="btn primary">播放本地视频</div>
+        <div id="btnAudio" class="btn">播放本地音频</div>
+      </div>
+
+      <div id="actionsNetwork">
+        <div id="btnNetVideo" class="btn subtle">播放网络视频</div>
+        <div id="btnNetAudio" class="btn subtle">播放网络音频</div>
+      </div>
+
+      <audio id="demoAudio" src="demo.mp3" autoplay loop preload="none" paused="true" volume="1"></audio>
+      <audio id="demoNetAudio" src="" autoplay loop preload="metadata" paused="true" volume="1" network-timeout-ms="8000" network-buffer-kb="768" network-reconnect="true"></audio>
+    </div>
+  </div>
+</body>
+
+<style>
+  body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+  }
+
+  #overlay {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+  }
+
+  #panel {
+    width: 382px;
+    padding: 14px 14px 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: stretch;
+    overflow: hidden;
+    border-radius: 16px;
+    background-color: rgba(12, 14, 18, 0.74);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(12px);
+    box-shadow: 0px 14px 38px rgba(0, 0, 0, 0.45);
+  }
+
+  #header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  #titleGroup {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+  }
+
+  #title {
+    font-size: 15px;
+    font-weight: 800;
+    color: #EAF0FF;
+  }
+
+  #subtitle {
+    margin-top: 2px;
+    font-size: 11px;
+    color: rgba(234, 240, 255, 0.65);
+  }
+
+  #hint {
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.08);
+    color: rgba(234, 240, 255, 0.82);
+  }
+
+  #preview {
+    width: 100%;
+    height: 204px;
+    border-radius: 14px;
+    overflow: hidden;
+    position: relative;
+    background-color: rgba(0, 0, 0, 0.25);
+    background-image: linear-gradient(135deg, rgba(105, 125, 255, 0.35), rgba(16, 18, 22, 0.65));
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  #demoVideo {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    left: 0;
+    top: 0;
+  }
+
+  #previewOverlay {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    pointer-events: none;
+  }
+
+  #overlayTitle {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background-color: rgba(0, 0, 0, 0.25);
+    color: rgba(234, 240, 255, 0.9);
+    align-self: flex-start;
+  }
+
+  #status {
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    background-color: rgba(0, 0, 0, 0.25);
+    color: rgba(234, 240, 255, 0.75);
+    align-self: flex-start;
+  }
+
+  #actions {
+    display: flex;
+    flex-direction: row;
+    gap: 10px;
+    justify-content: space-between;
+  }
+
+  #actionsNetwork {
+    display: flex;
+    flex-direction: row;
+    gap: 10px;
+    justify-content: space-between;
+  }
+
+  .btn {
+    width: 172px;
+    height: 34px;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    color: #EAF0FF;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .btn.primary {
+    background-image: linear-gradient(135deg, rgba(110, 140, 255, 0.95), rgba(57, 82, 255, 0.65));
+    border: 1px solid rgba(145, 170, 255, 0.45);
+  }
+
+  .btn:hover {
+    background-color: rgba(255, 255, 255, 0.14);
+  }
+
+  .btn:active {
+    transform: translateY(1px);
+    background-color: rgba(255, 255, 255, 0.18);
+  }
+
+  .btn.primary:hover {
+    background-image: linear-gradient(135deg, rgba(130, 160, 255, 0.98), rgba(70, 100, 255, 0.78));
+  }
+
+  .btn.subtle {
+    background-color: rgba(98, 120, 255, 0.12);
+    border: 1px solid rgba(130, 155, 255, 0.24);
+    color: rgba(228, 236, 255, 0.95);
+  }
+
+  .btn.subtle:hover {
+    background-color: rgba(120, 145, 255, 0.20);
+  }
+
+  #demoAudio, #demoNetAudio {
+    display: none;
+  }
+</style>
+
+<script>
+  const NET_VIDEO_SRC = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+  const NET_AUDIO_SRC = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+
+  const video = document.querySelector("#demoVideo");
+  const localAudio = document.querySelector("#demoAudio");
+  const netAudio = document.querySelector("#demoNetAudio");
+
+  const btnVideo = document.querySelector("#btnVideo");
+  const btnAudio = document.querySelector("#btnAudio");
+  const btnNetVideo = document.querySelector("#btnNetVideo");
+  const btnNetAudio = document.querySelector("#btnNetAudio");
+  const status = document.querySelector("#status");
+  const MODE_LOCAL_VIDEO = "localVideo";
+  const MODE_LOCAL_AUDIO = "localAudio";
+  const MODE_NET_VIDEO = "netVideo";
+  const MODE_NET_AUDIO = "netAudio";
+  let activeMode = "";
+  let activePaused = true;
+
+  function setBoolAttr(el, name, value) {
+    if (!el) return;
+    el.setAttribute(name, value ? "true" : "false");
+  }
+
+  function stopAll() {
+    setBoolAttr(video, "paused", true);
+    setBoolAttr(localAudio, "paused", true);
+    setBoolAttr(netAudio, "paused", true);
+  }
+
+  function updateStatus(text, active) {
+    status.innerText = text;
+    btnVideo.setAttribute("class", active === "localVideo" ? "btn primary" : "btn");
+    btnAudio.setAttribute("class", active === "localAudio" ? "btn primary" : "btn");
+    btnNetVideo.setAttribute("class", active === "netVideo" ? "btn primary subtle" : "btn subtle");
+    btnNetAudio.setAttribute("class", active === "netAudio" ? "btn primary subtle" : "btn subtle");
+  }
+
+  function applyNetworkAttrs(el) {
+    if (!el) return;
+    el.setAttribute("network-timeout-ms", "8000");
+    el.setAttribute("network-buffer-kb", "768");
+    el.setAttribute("network-reconnect", "true");
+    el.setAttribute("preload", "metadata");
+    el.setAttribute("max-fps", "30");
+    el.setAttribute("decode-width", "960");
+    el.setAttribute("drop-frames", "true");
+  }
+
+  function pauseMode(mode, paused) {
+    if (mode === MODE_LOCAL_VIDEO || mode === MODE_NET_VIDEO) {
+      setBoolAttr(video, "paused", paused);
+      return;
+    }
+    if (mode === MODE_LOCAL_AUDIO) {
+      setBoolAttr(localAudio, "paused", paused);
+      return;
+    }
+    if (mode === MODE_NET_AUDIO) {
+      setBoolAttr(netAudio, "paused", paused);
+    }
+  }
+
+  function modeText(mode, paused) {
+    if (mode === MODE_LOCAL_VIDEO) return paused ? "本地视频已暂停" : "本地视频播放中";
+    if (mode === MODE_LOCAL_AUDIO) return paused ? "本地音频已暂停" : "本地音频播放中";
+    if (mode === MODE_NET_VIDEO) return paused ? "网络视频已暂停" : "网络视频播放中";
+    if (mode === MODE_NET_AUDIO) return paused ? "网络音频已暂停" : "网络音频播放中";
+    return "就绪";
+  }
+
+  function startMode(mode) {
+    stopAll();
+    setBoolAttr(video, "autoplay", true);
+    setBoolAttr(localAudio, "autoplay", true);
+    setBoolAttr(netAudio, "autoplay", true);
+
+    if (mode === MODE_LOCAL_VIDEO) {
+      video.setAttribute("src", "demo.mp4");
+      setBoolAttr(video, "muted", false);
+      setBoolAttr(video, "paused", false);
+    } else if (mode === MODE_LOCAL_AUDIO) {
+      localAudio.setAttribute("src", "demo.mp3");
+      setBoolAttr(localAudio, "paused", false);
+    } else if (mode === MODE_NET_VIDEO) {
+      video.setAttribute("src", NET_VIDEO_SRC);
+      applyNetworkAttrs(video);
+      setBoolAttr(video, "muted", false);
+      setBoolAttr(video, "paused", false);
+    } else if (mode === MODE_NET_AUDIO) {
+      netAudio.setAttribute("src", NET_AUDIO_SRC);
+      applyNetworkAttrs(netAudio);
+      setBoolAttr(netAudio, "paused", false);
+    }
+
+    activeMode = mode;
+    activePaused = false;
+    updateStatus(modeText(mode, false), mode);
+  }
+
+  function toggleMode(mode) {
+    if (activeMode === mode) {
+      activePaused = !activePaused;
+      pauseMode(mode, activePaused);
+      updateStatus(modeText(mode, activePaused), mode);
+      return;
+    }
+    startMode(mode);
+  }
+
+  btnVideo.addEventListener("mousedown", () => {
+    toggleMode(MODE_LOCAL_VIDEO);
+  });
+
+  btnAudio.addEventListener("mousedown", () => {
+    toggleMode(MODE_LOCAL_AUDIO);
+  });
+
+  btnNetVideo.addEventListener("mousedown", () => {
+    toggleMode(MODE_NET_VIDEO);
+  });
+
+  btnNetAudio.addEventListener("mousedown", () => {
+    toggleMode(MODE_NET_AUDIO);
+  });
+
+  stopAll();
+  updateStatus("就绪", "");
+</script>
