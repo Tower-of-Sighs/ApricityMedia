@@ -1,154 +1,154 @@
-buildscript {
-    repositories {
-        maven {
-            url = 'https://repo.spongepowered.org/repository/maven-public/'
-        }
-    }
-    dependencies {
-        classpath 'org.spongepowered:mixingradle:0.7-SNAPSHOT'
-    }
-}
-
 plugins {
     id 'eclipse'
     id 'idea'
+    id 'java-library'
     id 'maven-publish'
-    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'net.neoforged.moddev.legacyforge' version '2.0.91'
 }
 
-apply plugin: 'org.spongepowered.mixin'
-
-version = project.mod_version
-group = project.mod_group_id
+group = mod_group_id
+version = mod_version
 
 def javacppVersion = "1.5.13"
-def javacppVersionRange = "[1.5.13,1.5.14)"
 def ffmpegVersion = "8.0.1-1.5.13"
-def ffmpegVersionRange = "[8.0.1-1.5.13,8.0.1-1.5.14)"
 def nativePlatforms = [
-        "linux-x86_64",
-        "linux-arm64",
-        "macosx-x86_64",
-        "macosx-arm64",
-        "windows-x86_64",
-        "android-arm64",
-        "android-x86_64"
+        "linux-x86_64", "linux-arm64",
+        "macosx-x86_64", "macosx-arm64",
+        "windows-x86_64", "android-arm64", "android-x86_64"
 ]
+def runtimeNativePlatform = {
+    def osName = System.getProperty("os.name").toLowerCase()
+    def osArch = System.getProperty("os.arch").toLowerCase()
+    if (osName.contains("win")) return "windows-x86_64"
+    if (osName.contains("mac")) return osArch.contains("aarch64") || osArch.contains("arm64") ? "macosx-arm64" : "macosx-x86_64"
+    if (osName.contains("linux")) return osArch.contains("aarch64") || osArch.contains("arm64") ? "linux-arm64" : "linux-x86_64"
+    return null
+}()
 
 base {
-    archivesName = project.mod_id
+    archivesName = "${mod_name}-forge-${minecraft_version}"
 }
 
-java.toolchain.languageVersion = JavaLanguageVersion.of(17)
-
-configurations {
-    bytedecoNativeBundle
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(17)
+    withSourcesJar()
 }
 
-println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
-
-jarJar.enable()
-
-minecraft {
-    mappings channel: mapping_channel, version: mapping_version
-    copyIdeResources = true
+legacyForge {
+    version = project.minecraft_version + '-' + project.forge_version
+//
+//    parchment {
+//        mappingsVersion = project.parchment_mappings_version
+//        minecraftVersion = project.parchment_minecraft_version
+//    }
 
     runs {
-        configureEach {
-            workingDirectory project.file('run')
-            property 'forge.logging.markers', 'REGISTRIES'
-            property 'forge.logging.console.level', 'debug'
-            property 'mixin.env.remapRefMap', 'true'
-            property 'mixin.env.refMapRemappingFile', "${project.buildDir}/createSrgToMcp/output.srg"
-
-            mods {
-                "${project.mod_id}" {
-                    source sourceSets.main
-                }
-            }
-        }
-
         client {
-            property 'forge.enabledGameTestNamespaces', project.mod_id
+            client()
+
+            systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
         }
 
         server {
-            property 'forge.enabledGameTestNamespaces', project.mod_id
-            args '--nogui'
+            server()
+            programArgument '--nogui'
+            systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
         }
 
         gameTestServer {
-            property 'forge.enabledGameTestNamespaces', project.mod_id
+            type = "gameTestServer"
+            systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
         }
 
         data {
-            workingDirectory project.file('run-data')
-            args '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/'), '--existing', file('src/main/resources/')
+            data()
+
+            programArguments.addAll '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/').getAbsolutePath(), '--existing', file('src/main/resources/').getAbsolutePath()
+        }
+
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
         }
     }
 }
 
-sourceSets.main.resources {
-    srcDir 'src/generated/resources'
-}
+sourceSets.main.resources { srcDir 'src/generated/resources' }
 
-mixin {
-    add sourceSets.main, "${project.mod_id}.refmap.json"
-    config "${project.mod_id}.mixins.json"
+configurations {
+    runtimeClasspath.extendsFrom localRuntime
+}
+obfuscation {
+    createRemappingConfiguration(configurations.localRuntime)
 }
 
 repositories {
-    maven {
-        url "https://maven.sighs.cc/repository/maven-releases/"
-    }
-    maven {
-        url "https://maven.sighs.cc/repository/maven-snapshots/"
-    }
-    maven {
-        name = "Curse Maven"
-        url = "https://www.cursemaven.com"
-        content {
-            includeGroup "curse.maven"
-        }
-    }
-    maven {
-        name = "Aliyun Public"
-        url = "https://maven.aliyun.com/repository/public"
-    }
-    maven {
-        url = "https://repo.spongepowered.org/repository/maven-public/"
-        content {
-            includeGroup "org.spongepowered"
-        }
-    }
+    mavenLocal()
+    maven { url "https://maven.sighs.cc/repository/maven-releases/" }
+    maven { url "https://maven.sighs.cc/repository/maven-snapshots/" }
+    maven { name = "Curse Maven"; url = "https://www.cursemaven.com"; content { includeGroup "curse.maven" } }
     mavenCentral()
 }
 
 dependencies {
-    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+    modImplementation ("curse.maven:kubejs-238086:5853326")
+    modImplementation ("curse.maven:rhino-416294:6186971")
+    modImplementation ("curse.maven:architectury-api-419699:5137938")
 
-    implementation("com.sighs:ApricityUI-forge-1.20.1:${apricityui_version}") {
-        transitive = false
-    }
-    implementation("cc.sighs.oelib:OELib-forge-1.20.1:${oelib_version}") {
-        transitive = false
-    }
+    modImplementation "com.sighs:ApricityUI-forge-1.20.1:1.0.4"
 
-    implementation "org.bytedeco:javacpp:${javacppVersionRange}"
-    implementation "org.bytedeco:ffmpeg:${ffmpegVersionRange}"
-    jarJar "org.bytedeco:javacpp:${javacppVersionRange}"
-    jarJar "org.bytedeco:ffmpeg:${ffmpegVersionRange}"
+    jarJar(implementation("org.bytedeco:javacpp:${javacppVersion}")) {
+        version {
+            strictly "[${javacppVersion}]"
+            prefer javacppVersion
+        }
+    }
+    jarJar(implementation("org.bytedeco:ffmpeg:${ffmpegVersion}")) {
+        version {
+            strictly "[${ffmpegVersion}]"
+            prefer ffmpegVersion
+        }
+    }
+    additionalRuntimeClasspath "org.bytedeco:javacpp:${javacppVersion}"
+    additionalRuntimeClasspath "org.bytedeco:ffmpeg:${ffmpegVersion}"
+    if (runtimeNativePlatform != null) {
+        additionalRuntimeClasspath "org.bytedeco:javacpp:${javacppVersion}:${runtimeNativePlatform}"
+        additionalRuntimeClasspath "org.bytedeco:ffmpeg:${ffmpegVersion}:${runtimeNativePlatform}"
+    }
 
     nativePlatforms.each { platform ->
-        runtimeOnly "org.bytedeco:javacpp:${javacppVersionRange}:${platform}"
-        runtimeOnly "org.bytedeco:ffmpeg:${ffmpegVersionRange}:${platform}"
-        jarJar "org.bytedeco:javacpp:${javacppVersionRange}:${platform}"
-        jarJar "org.bytedeco:ffmpeg:${ffmpegVersionRange}:${platform}"
-        bytedecoNativeBundle "org.bytedeco:javacpp:${javacppVersionRange}:${platform}"
-        bytedecoNativeBundle "org.bytedeco:ffmpeg:${ffmpegVersionRange}:${platform}"
+        jarJar(implementation("org.bytedeco:javacpp:${javacppVersion}:${platform}")) {
+            version {
+                strictly "[${javacppVersion}]"
+                prefer javacppVersion
+            }
+        }
+        jarJar(implementation("org.bytedeco:ffmpeg:${ffmpegVersion}:${platform}")) {
+            version {
+                strictly "[${ffmpegVersion}]"
+                prefer ffmpegVersion
+            }
+        }
     }
+}
 
-    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+
+mixin {
+    add sourceSets.main, "${mod_id}.refmap.json"
+    config "${mod_id}.mixins.json"
+}
+
+jar {
+    manifest.attributes([
+            "MixinConfigs": "${mod_id}.mixins.json"
+    ])
 }
 
 tasks.named('processResources', ProcessResources).configure {
@@ -163,68 +163,139 @@ tasks.named('processResources', ProcessResources).configure {
             mod_license            : mod_license,
             mod_version            : mod_version,
             mod_authors            : mod_authors,
-            mod_description        : mod_description,
-            apricityui_version     : apricityui_version,
-            oelib_version          : oelib_version
+            mod_description        : mod_description
     ]
     inputs.properties replaceProperties
-
     filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
         expand replaceProperties
     }
+
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
 
-def commonManifestAttributes = [
-        'Specification-Title'     : project.mod_id,
-        'Specification-Vendor'    : project.mod_authors,
-        'Specification-Version'   : '1',
-        'Implementation-Title'    : project.name,
-        'Implementation-Version'  : project.version,
-        'Implementation-Vendor'   : project.mod_authors,
-        'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
-        'MixinConfigs'            : "${project.mod_id}.mixins.json"
-]
+def packagedJarTask = tasks.named("jar", Jar)
+def variantOutputDir = layout.buildDirectory.dir("libs")
 
-tasks.named('jar', Jar).configure {
-    archiveClassifier.set('slim')
-    manifest {
-        attributes(commonManifestAttributes)
+def filterJarJarMetadata = { File jarFile, Closure<Boolean> keepEntry, File outputFile ->
+    def entryPath = "META-INF/jarjar/metadata.json"
+    def jar = new java.util.jar.JarFile(jarFile)
+    try {
+        def entry = jar.getJarEntry(entryPath)
+        if (entry == null) {
+            outputFile.parentFile.mkdirs()
+            outputFile.text = "{\"jars\":[]}"
+            return
+        }
+        def text = jar.getInputStream(entry).getText("UTF-8")
+        def parsed = new groovy.json.JsonSlurper().parseText(text)
+        def jars = parsed instanceof Map ? parsed.get("jars") : null
+        if (!(jars instanceof List)) {
+            outputFile.parentFile.mkdirs()
+            outputFile.text = "{\"jars\":[]}"
+            return
+        }
+        def filtered = jars.findAll { item ->
+            def path = item instanceof Map ? item.get("path") : null
+            path != null && keepEntry.call(path.toString())
+        }
+        parsed.put("jars", filtered)
+        outputFile.parentFile.mkdirs()
+        outputFile.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(parsed))
+    } finally {
+        jar.close()
     }
-    finalizedBy 'reobfJar'
 }
 
-tasks.named('jarJar').configure {
-    archiveClassifier.set('')
-    manifest {
-        attributes(commonManifestAttributes + [
-                'AUIVideo-Distribution': 'full'
-        ])
+def registerVariantJarTask = { String taskName, String classifier, String distribution, Closure<Boolean> keepEntry ->
+    tasks.register(taskName, Jar) {
+        dependsOn(packagedJarTask)
+        archiveBaseName.set(base.archivesName.get())
+        archiveVersion.set(project.version.toString())
+        archiveClassifier.set(classifier)
+        destinationDirectory.set(variantOutputDir)
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+        from({
+            zipTree(packagedJarTask.get().archiveFile.get().asFile)
+        }) {
+            exclude { details ->
+                String path = details.path.replace("\\", "/")
+                if (path == "META-INF/jarjar/metadata.json") return true
+                return !keepEntry.call(path)
+            }
+        }
+        def metadataOutput = layout.buildDirectory.file("tmp/jarjar/${taskName}/metadata.json")
+        inputs.file(packagedJarTask.get().archiveFile)
+        outputs.file(metadataOutput)
+        doFirst {
+            def jarFile = packagedJarTask.get().archiveFile.get().asFile
+            def outputFile = metadataOutput.get().asFile
+            filterJarJarMetadata.call(jarFile, keepEntry, outputFile)
+        }
+        from(metadataOutput) {
+            into("META-INF/jarjar")
+            rename { "metadata.json" }
+        }
+        manifest { attributes("AUIVideo-Distribution": distribution) }
     }
-    from({
-        project.configurations.bytedecoNativeBundle.files
-    }) {
-        into 'META-INF/jarjar'
-    }
-    finalizedBy 'reobfJarJar'
 }
 
-tasks.named("build") {
-    dependsOn("jarJar")
+registerVariantJarTask("jarFullVariant", "full", "full", { true })
+
+registerVariantJarTask("jarDownloaderVariant", "downloader", "downloader", { path ->
+    if (!path.startsWith("META-INF/jarjar/")) return true
+    if ((path.contains("javacpp") || path.contains("ffmpeg")) && nativePlatforms.any { p -> path.contains(p) }) {
+        return false
+    }
+    return true
+})
+
+nativePlatforms.each { platform ->
+    String taskSuffix = platform.replace("-", "_").replace(".", "_")
+    registerVariantJarTask("jarPlatformVariant_${taskSuffix}", "platform-${platform}", "platform-${platform}", { path ->
+        if (!path.startsWith("META-INF/jarjar/")) return true
+        if (path.contains("javacpp") || path.contains("ffmpeg")) {
+            if (nativePlatforms.any { p -> path.contains(p) }) {
+                return path.contains(platform)
+            }
+        }
+        return true
+    })
 }
+
+tasks.register("buildDistVariants") {
+    dependsOn "jarFullVariant", "jarDownloaderVariant"
+    nativePlatforms.each { platform ->
+        dependsOn "jarPlatformVariant_${platform.replace("-", "_").replace(".", "_")}"
+    }
+}
+
+tasks.named("build") { dependsOn "buildDistVariants" }
 
 publishing {
     publications {
-        register('mavenJava', MavenPublication) {
-            artifact tasks.named('jarJar')
+        mavenJava(MavenPublication) {
+            from components.java
+            groupId = project.group
+            artifactId = base.archivesName.get()
+            version = project.version
         }
     }
     repositories {
+        def publishUrl = project.version.toString().toLowerCase().contains('snapshot') ?
+                "https://maven.sighs.cc/repository/maven-snapshots/" :
+                "https://maven.sighs.cc/repository/maven-releases/"
         maven {
-            url "file://${project.projectDir}/mcmodsrepo"
+            url = uri(publishUrl)
+            credentials {
+                username = System.getenv("SIGHS_PUBLISH_USER")
+                password = System.getenv("SIGHS_PUBLISH_PASSWORD")
+            }
         }
     }
 }
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
+    options.release.set(17)
 }
