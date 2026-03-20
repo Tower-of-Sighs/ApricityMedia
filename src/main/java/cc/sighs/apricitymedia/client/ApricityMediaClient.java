@@ -1,55 +1,54 @@
 package cc.sighs.apricitymedia.client;
 
+import cc.sighs.apricitymedia.ApricityMedia;
 import cc.sighs.apricitymedia.FFmpegRuntimeBootstrap;
 import com.mojang.blaze3d.platform.InputConstants;
 import com.sighs.apricityui.init.Document;
 import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import net.minecraftforge.client.event.ScreenEvent;
-import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.eventbus.api.IEventBus;
-import net.minecraftforge.fml.loading.FMLEnvironment;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@Mod.EventBusSubscriber(modid = ApricityMedia.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE, value = Dist.CLIENT)
 public final class ApricityMediaClient {
     private static final Logger LOGGER = LoggerFactory.getLogger(ApricityMediaClient.class);
     private static final String DEMO_PATH = "apricityui/video_demo.html";
     private static final String INIT_FAIL_TIP_PATH = "auivideo/ffmpeg_runtime_tip.html";
     private static final String INIT_FAIL_TIP_FALLBACK_PATH = "apricityui/auivideo/ffmpeg_runtime_tip.html";
+
     private static long lastToggleAtMs = 0L;
     private static long lastScreenToggleAtMs = 0L;
     private static boolean initFailTipShown = false;
     private static int titleScreenTicks = 0;
 
-    private static final KeyMapping OPEN_DEMO = new KeyMapping(
+    public static final KeyMapping OPEN_DEMO = new KeyMapping(
             "key.apricityui.video.demo",
             InputConstants.Type.KEYSYM,
             GLFW.GLFW_KEY_K,
             "key.categories.apricityui"
     );
 
-    private ApricityMediaClient() {
-    }
+    private ApricityMediaClient() {}
 
-    public static void register(IEventBus modEventBus) {
-        if (FMLEnvironment.production) {
-            return;
+    @Mod.EventBusSubscriber(modid = ApricityMedia.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
+    public static class ModBusEvents {
+        @SubscribeEvent
+        public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
+            event.register(OPEN_DEMO);
         }
-        modEventBus.addListener(ApricityMediaClient::onRegisterKeyMappings);
-        MinecraftForge.EVENT_BUS.addListener(ApricityMediaClient::onClientTick);
-        MinecraftForge.EVENT_BUS.addListener(ApricityMediaClient::onScreenKeyPressed);
     }
 
-    private static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
-        event.register(OPEN_DEMO);
-    }
-
-    private static void onClientTick(TickEvent.ClientTickEvent event) {
+    @SubscribeEvent
+    public static void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) {
             return;
         }
@@ -60,11 +59,12 @@ public final class ApricityMediaClient {
             }
             toggleDemoDebounced();
         }
-        Screen currentScreen = net.minecraft.client.Minecraft.getInstance().screen;
+        Screen currentScreen = Minecraft.getInstance().screen;
         tryShowInitFailTip(currentScreen);
     }
 
-    private static void onScreenKeyPressed(ScreenEvent.KeyPressed.Post event) {
+    @SubscribeEvent
+    public static void onScreenKeyPressed(ScreenEvent.KeyPressed.Post event) {
         if (!OPEN_DEMO.matches(event.getKeyCode(), event.getScanCode())) {
             return;
         }

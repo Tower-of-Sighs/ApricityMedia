@@ -1,11 +1,8 @@
-# 这里的 modLoader 和 loaderVersion 是固定写法
 modLoader="javafml"
 loaderVersion="${loader_version_range}"
 
-# 对应 fabric.mod.json 的 license
 license="${mod_license}"
 
-# 对应 fabric.mod.json 的 contact
 #issueTrackerURL="https://github.com/..."
 
 [[mods]]
