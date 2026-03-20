@@ -1,10 +1,10 @@
 package cc.sighs.apricitymedia;
 
 import cc.sighs.apricitymedia.hack.FixedModularURLHandler;
-import net.lenni0451.reflect.Fields;
 import net.minecraftforge.fml.loading.FMLLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.misc.Unsafe;
 
 import java.io.InputStream;
 import java.lang.reflect.Field;
@@ -35,6 +35,7 @@ public final class FFmpegRuntimeBootstrap {
     private static final Set<String> CLASS_PATH_ADDED = new HashSet<>();
     private static final int DOWNLOAD_RETRY_COUNT = 3;
     private static final int PREWARM_MAX_ATTEMPTS = 6;
+    private static final Unsafe UNSAFE = initUnsafe();
     private static boolean initialized = false;
     private static RuntimeException initError;
     private static Thread prewarmThread;
@@ -153,11 +154,11 @@ public final class FFmpegRuntimeBootstrap {
         Class.forName("cc.sighs.apricitymedia.hack.FixedModularURLHandler$FunctionURLConnection", true, FFmpegRuntimeBootstrap.class.getClassLoader());
         Class.forName("cc.sighs.apricitymedia.hack.FixedModularURLHandler$FixedURLProvider", true, FFmpegRuntimeBootstrap.class.getClassLoader());
         Class.forName("cc.sighs.apricitymedia.hack.FixedUnionURLStreamHandler", true, FFmpegRuntimeBootstrap.class.getClassLoader());
-        Field factory = URL.class.getDeclaredField("factory");
-        Field handlers = URL.class.getDeclaredField("handlers");
+        Field factoryField = URL.class.getDeclaredField("factory");
+        Field handlersField = URL.class.getDeclaredField("handlers");
         FixedModularURLHandler.init();
-        Fields.set(null, factory, FixedModularURLHandler.INSTANCE);
-        Hashtable<String, URLStreamHandler> handlersTable = Fields.get(null, handlers);
+        setStaticField(factoryField, FixedModularURLHandler.INSTANCE);
+        Hashtable<String, URLStreamHandler> handlersTable = getStaticField(handlersField);
         handlersTable.clear();
         Class<?> loaderClass = Class.forName("org.bytedeco.javacpp.Loader");
         Method loadMethod = loaderClass.getMethod("load", Class.class);
@@ -166,11 +167,32 @@ public final class FFmpegRuntimeBootstrap {
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.avformat"));
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.swresample"));
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.swscale"));
-//        Fields.set(null, factory, ModularURLHandler.INSTANCE);
-//        handlersTable.clear();
     }
 
-    private static void addToRuntimeClassPath(Path jarPath) throws Exception {
+    @SuppressWarnings("unchecked")
+    private static <T> T getStaticField(Field field) {
+        Object base = UNSAFE.staticFieldBase(field);
+        long offset = UNSAFE.staticFieldOffset(field);
+        return (T) UNSAFE.getObject(base, offset);
+    }
+
+    private static void setStaticField(Field field, Object value) {
+        Object base = UNSAFE.staticFieldBase(field);
+        long offset = UNSAFE.staticFieldOffset(field);
+        UNSAFE.putObject(base, offset, value);
+    }
+
+    private static Unsafe initUnsafe() {
+        try {
+            Field unsafeField = Unsafe.class.getDeclaredField("theUnsafe");
+            unsafeField.setAccessible(true);
+            return (Unsafe) unsafeField.get(null);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to initialize Unsafe", e);
+        }
+    }
+
+    private static void addToRuntimeClassPath(Path jarPath) {
         if (jarPath == null) return;
         Path absolute = jarPath.toAbsolutePath().normalize();
         String key = absolute.toString();

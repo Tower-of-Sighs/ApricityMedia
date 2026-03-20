@@ -123,9 +123,6 @@ dependencies {
         additionalRuntimeClasspath "org.bytedeco:ffmpeg:${ffmpegVersion}:${runtimeNativePlatform}"
     }
 
-    additionalRuntimeClasspath(compileOnly("net.lenni0451:Reflect:1.4.0"))
-    jarJar "net.lenni0451:Reflect:1.4.0"
-
     nativePlatforms.each { platform ->
         jarJar(compileOnly("org.bytedeco:javacpp:${javacppVersion}:${platform}")) {
             version {

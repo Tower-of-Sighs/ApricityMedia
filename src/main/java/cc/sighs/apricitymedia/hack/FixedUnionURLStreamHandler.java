@@ -23,14 +23,11 @@ public class FixedUnionURLStreamHandler implements FixedModularURLHandler.FixedU
             try {
                 if (Paths.get(u.toURI()) instanceof UnionPath upath) {
                     return upath.buildInputStream();
-                } else {
-                    throw new IllegalArgumentException("Invalid Path " + u.toURI() + " at UnionURLStreamHandler");
                 }
+                throw new IllegalArgumentException("Invalid Path " + u.toURI() + " at UnionURLStreamHandler");
             } catch (URISyntaxException e) {
                 throw new RuntimeException(e);
             }
-
-
         };
     }
 

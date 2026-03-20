@@ -29,10 +29,9 @@ public class FixedModularURLHandler implements URLStreamHandlerFactory {
     @Override
     public URLStreamHandler createURLStreamHandler(final String protocol) {
         if (handlers == null) return null;
-        if (handlers.containsKey(protocol)) {
-            return new FunctionURLStreamHandler(handlers.get(protocol));
-        }
-        return null;
+        ModularURLHandler.IURLProvider provider = handlers.get(protocol);
+        if (provider == null) return null;
+        return new FunctionURLStreamHandler(provider);
     }
 
     private static class FunctionURLStreamHandler extends URLStreamHandler {
@@ -43,7 +42,7 @@ public class FixedModularURLHandler implements URLStreamHandlerFactory {
         }
 
         @Override
-        protected URLConnection openConnection(final URL u) throws IOException {
+        protected URLConnection openConnection(final URL u) {
             return new FunctionURLConnection(u, this.iurlProvider);
         }
     }
@@ -57,7 +56,7 @@ public class FixedModularURLHandler implements URLStreamHandlerFactory {
         }
 
         @Override
-        public void connect() throws IOException {
+        public void connect() {
         }
 
         @Override
@@ -93,11 +92,6 @@ public class FixedModularURLHandler implements URLStreamHandlerFactory {
     }
 
     public interface FixedURLProvider extends ModularURLHandler.IURLProvider {
-
-        String protocol();
-
-        Function<URL, InputStream> inputStreamFunction();
-
         default long getLastModified(URL url) {
             return 0;
         }
