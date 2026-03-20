@@ -1,13 +1,17 @@
 package cc.sighs.apricitymedia;
 
+import cc.sighs.apricitymedia.hack.FixedModularURLHandler;
 import net.minecraftforge.fml.loading.FMLLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.misc.Unsafe;
 
 import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URL;
+import java.net.URLStreamHandler;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -16,6 +20,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.Hashtable;
 import java.util.Set;
 import java.util.jar.Attributes;
 import java.util.jar.JarFile;
@@ -30,6 +35,7 @@ public final class FFmpegRuntimeBootstrap {
     private static final Set<String> CLASS_PATH_ADDED = new HashSet<>();
     private static final int DOWNLOAD_RETRY_COUNT = 3;
     private static final int PREWARM_MAX_ATTEMPTS = 6;
+    private static final Unsafe UNSAFE = initUnsafe();
     private static boolean initialized = false;
     private static RuntimeException initError;
     private static Thread prewarmThread;
@@ -123,9 +129,9 @@ public final class FFmpegRuntimeBootstrap {
     private static void prepareDownloaderRuntime() throws Exception {
         String platform = resolvePlatformClassifier();
         Path runtimeDir = FMLLoader.getGamePath()
-                .resolve(".apricityui-video")
-                .resolve("runtime")
-                .resolve(FFMPEG_VERSION);
+                                   .resolve(".apricityui-video")
+                                   .resolve("runtime")
+                                   .resolve(FFMPEG_VERSION);
         Files.createDirectories(runtimeDir);
 
         String javacppName = "javacpp-" + JAVACPP_VERSION + "-" + platform + ".jar";
@@ -143,6 +149,17 @@ public final class FFmpegRuntimeBootstrap {
     }
 
     private static void loadNatives() throws Exception {
+        //see: https://github.com/bytedeco/javacpp/issues/697
+        Class.forName("cc.sighs.apricitymedia.hack.FixedModularURLHandler$FunctionURLStreamHandler", true, FFmpegRuntimeBootstrap.class.getClassLoader());
+        Class.forName("cc.sighs.apricitymedia.hack.FixedModularURLHandler$FunctionURLConnection", true, FFmpegRuntimeBootstrap.class.getClassLoader());
+        Class.forName("cc.sighs.apricitymedia.hack.FixedModularURLHandler$FixedURLProvider", true, FFmpegRuntimeBootstrap.class.getClassLoader());
+        Class.forName("cc.sighs.apricitymedia.hack.FixedUnionURLStreamHandler", true, FFmpegRuntimeBootstrap.class.getClassLoader());
+        Field factoryField = URL.class.getDeclaredField("factory");
+        Field handlersField = URL.class.getDeclaredField("handlers");
+        FixedModularURLHandler.init();
+        setStaticField(factoryField, FixedModularURLHandler.INSTANCE);
+        Hashtable<String, URLStreamHandler> handlersTable = getStaticField(handlersField);
+        handlersTable.clear();
         Class<?> loaderClass = Class.forName("org.bytedeco.javacpp.Loader");
         Method loadMethod = loaderClass.getMethod("load", Class.class);
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.avutil"));
@@ -152,7 +169,30 @@ public final class FFmpegRuntimeBootstrap {
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.swscale"));
     }
 
-    private static void addToRuntimeClassPath(Path jarPath) throws Exception {
+    @SuppressWarnings("unchecked")
+    private static <T> T getStaticField(Field field) {
+        Object base = UNSAFE.staticFieldBase(field);
+        long offset = UNSAFE.staticFieldOffset(field);
+        return (T) UNSAFE.getObject(base, offset);
+    }
+
+    private static void setStaticField(Field field, Object value) {
+        Object base = UNSAFE.staticFieldBase(field);
+        long offset = UNSAFE.staticFieldOffset(field);
+        UNSAFE.putObject(base, offset, value);
+    }
+
+    private static Unsafe initUnsafe() {
+        try {
+            Field unsafeField = Unsafe.class.getDeclaredField("theUnsafe");
+            unsafeField.setAccessible(true);
+            return (Unsafe) unsafeField.get(null);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to initialize Unsafe", e);
+        }
+    }
+
+    private static void addToRuntimeClassPath(Path jarPath) {
         if (jarPath == null) return;
         Path absolute = jarPath.toAbsolutePath().normalize();
         String key = absolute.toString();
