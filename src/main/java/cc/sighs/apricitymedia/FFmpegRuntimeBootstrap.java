@@ -1,13 +1,17 @@
 package cc.sighs.apricitymedia;
 
+import cc.sighs.apricitymedia.hack.FixedModularURLHandler;
+import net.lenni0451.reflect.Fields;
 import net.minecraftforge.fml.loading.FMLLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URL;
+import java.net.URLStreamHandler;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -16,6 +20,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.Hashtable;
 import java.util.Set;
 import java.util.jar.Attributes;
 import java.util.jar.JarFile;
@@ -123,9 +128,9 @@ public final class FFmpegRuntimeBootstrap {
     private static void prepareDownloaderRuntime() throws Exception {
         String platform = resolvePlatformClassifier();
         Path runtimeDir = FMLLoader.getGamePath()
-                .resolve(".apricityui-video")
-                .resolve("runtime")
-                .resolve(FFMPEG_VERSION);
+                                   .resolve(".apricityui-video")
+                                   .resolve("runtime")
+                                   .resolve(FFMPEG_VERSION);
         Files.createDirectories(runtimeDir);
 
         String javacppName = "javacpp-" + JAVACPP_VERSION + "-" + platform + ".jar";
@@ -143,6 +148,17 @@ public final class FFmpegRuntimeBootstrap {
     }
 
     private static void loadNatives() throws Exception {
+        //see: https://github.com/bytedeco/javacpp/issues/697
+        Class.forName("cc.sighs.apricitymedia.hack.FixedModularURLHandler$FunctionURLStreamHandler", true, FFmpegRuntimeBootstrap.class.getClassLoader());
+        Class.forName("cc.sighs.apricitymedia.hack.FixedModularURLHandler$FunctionURLConnection", true, FFmpegRuntimeBootstrap.class.getClassLoader());
+        Class.forName("cc.sighs.apricitymedia.hack.FixedModularURLHandler$FixedURLProvider", true, FFmpegRuntimeBootstrap.class.getClassLoader());
+        Class.forName("cc.sighs.apricitymedia.hack.FixedUnionURLStreamHandler", true, FFmpegRuntimeBootstrap.class.getClassLoader());
+        Field factory = URL.class.getDeclaredField("factory");
+        Field handlers = URL.class.getDeclaredField("handlers");
+        FixedModularURLHandler.init();
+        Fields.set(null, factory, FixedModularURLHandler.INSTANCE);
+        Hashtable<String, URLStreamHandler> handlersTable = Fields.get(null, handlers);
+        handlersTable.clear();
         Class<?> loaderClass = Class.forName("org.bytedeco.javacpp.Loader");
         Method loadMethod = loaderClass.getMethod("load", Class.class);
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.avutil"));
@@ -150,6 +166,8 @@ public final class FFmpegRuntimeBootstrap {
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.avformat"));
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.swresample"));
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.swscale"));
+//        Fields.set(null, factory, ModularURLHandler.INSTANCE);
+//        handlersTable.clear();
     }
 
     private static void addToRuntimeClassPath(Path jarPath) throws Exception {

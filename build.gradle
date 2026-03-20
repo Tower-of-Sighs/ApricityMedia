@@ -104,13 +104,13 @@ dependencies {
 
     modImplementation "com.sighs:ApricityUI-forge-1.20.1:1.0.4"
 
-    jarJar(implementation("org.bytedeco:javacpp:${javacppVersion}")) {
+    jarJar(compileOnly("org.bytedeco:javacpp:${javacppVersion}")) {
         version {
             strictly "[${javacppVersion}]"
             prefer javacppVersion
         }
     }
-    jarJar(implementation("org.bytedeco:ffmpeg:${ffmpegVersion}")) {
+    jarJar(compileOnly("org.bytedeco:ffmpeg:${ffmpegVersion}")) {
         version {
             strictly "[${ffmpegVersion}]"
             prefer ffmpegVersion
@@ -123,14 +123,17 @@ dependencies {
         additionalRuntimeClasspath "org.bytedeco:ffmpeg:${ffmpegVersion}:${runtimeNativePlatform}"
     }
 
+    additionalRuntimeClasspath(compileOnly("net.lenni0451:Reflect:1.4.0"))
+    jarJar "net.lenni0451:Reflect:1.4.0"
+
     nativePlatforms.each { platform ->
-        jarJar(implementation("org.bytedeco:javacpp:${javacppVersion}:${platform}")) {
+        jarJar(compileOnly("org.bytedeco:javacpp:${javacppVersion}:${platform}")) {
             version {
                 strictly "[${javacppVersion}]"
                 prefer javacppVersion
             }
         }
-        jarJar(implementation("org.bytedeco:ffmpeg:${ffmpegVersion}:${platform}")) {
+        jarJar(compileOnly("org.bytedeco:ffmpeg:${ffmpegVersion}:${platform}")) {
             version {
                 strictly "[${ffmpegVersion}]"
                 prefer ffmpegVersion
