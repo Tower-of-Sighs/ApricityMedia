@@ -292,6 +292,7 @@
   }
 
   function startMode(mode) {
+    console.log("[ApricityMediaDemo] startMode", mode);
     stopAll();
     setBoolAttr(video, "autoplay", true);
     setBoolAttr(localAudio, "autoplay", true);
@@ -321,28 +322,36 @@
   }
 
   function toggleMode(mode) {
+    console.log("[ApricityMediaDemo] toggleMode before", mode, "activeMode=", activeMode, "activePaused=", activePaused);
     if (activeMode === mode) {
       activePaused = !activePaused;
       pauseMode(mode, activePaused);
       updateStatus(modeText(mode, activePaused), mode);
+      console.log("[ApricityMediaDemo] toggleMode pause", mode, "paused=", activePaused);
       return;
     }
     startMode(mode);
   }
 
+  console.log("[ApricityMediaDemo] script loaded");
+
   btnVideo.addEventListener("mousedown", () => {
+    console.log("[ApricityMediaDemo] click local video");
     toggleMode(MODE_LOCAL_VIDEO);
   });
 
   btnAudio.addEventListener("mousedown", () => {
+    console.log("[ApricityMediaDemo] click local audio");
     toggleMode(MODE_LOCAL_AUDIO);
   });
 
   btnNetVideo.addEventListener("mousedown", () => {
+    console.log("[ApricityMediaDemo] click net video");
     toggleMode(MODE_NET_VIDEO);
   });
 
   btnNetAudio.addEventListener("mousedown", () => {
+    console.log("[ApricityMediaDemo] click net audio");
     toggleMode(MODE_NET_AUDIO);
   });
 

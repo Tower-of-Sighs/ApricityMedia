@@ -59,11 +59,14 @@ public final class VideoPlayer implements AutoCloseable {
 
     public static VideoPlayer open(String resolvedPath, boolean loop, int targetWidth, int targetHeight, double maxFps, int queueSize, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect) {
         if (!FFmpegRuntimeBootstrap.ensureReady()) {
-            LOGGER.warn("Open video playback skipped, FFmpeg runtime not ready: {}", FFmpegRuntimeBootstrap.getInitErrorMessage());
+            LOGGER.warn("VideoPlayer open aborted, runtime not ready, source={}, reason={}", resolvedPath, FFmpegRuntimeBootstrap.getInitErrorMessage());
             return null;
         }
         SourceHandle handle = prepareSource(resolvedPath);
-        if (handle == null || handle.source == null || handle.source.isBlank()) return null;
+        if (handle == null || handle.source == null || handle.source.isBlank()) {
+            LOGGER.warn("VideoPlayer open failed to prepare source={}", resolvedPath);
+            return null;
+        }
         return new VideoPlayer(handle.source, handle.cleanupFile, loop, targetWidth, targetHeight, maxFps, queueSize, networkTimeoutMs, networkBufferKb, networkReconnect);
     }
 

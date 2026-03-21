@@ -63,6 +63,7 @@ public class Video extends Element {
 
     private VideoPlayer player;
     private AudioPlayback audio;
+    private boolean audioOpening = false;
     private VideoFrame currentFrame;
     private VideoFrame pendingFrame;
     private long pendingDisplayAtMs = 0;
@@ -145,6 +146,9 @@ public class Video extends Element {
         if (resolvedSrc.isEmpty()) return;
         if (player == null && shouldPreload()) {
             ensurePlayer();
+        }
+        if (audio == null && shouldPreload() && !muted) {
+            ensureAudio();
         }
         applyAudioRuntime();
     }
@@ -401,18 +405,23 @@ public class Video extends Element {
 
     private void ensureAudio() {
         if (audio != null) return;
+        if (audioOpening) return;
         if (resolvedSrc.isEmpty()) return;
-        audio = AudioPlayback.open(resolvedSrc, loop, muted, volume, networkTimeoutMs, networkBufferKb, networkReconnect);
-        applyAudioRuntime();
+        audioOpening = true;
+        try {
+            audio = AudioPlayback.open(resolvedSrc, loop, muted, volume, networkTimeoutMs, networkBufferKb, networkReconnect);
+            if (audio != null) {
+                audio.setMuted(muted);
+                audio.setVolume(volume);
+                audio.setPaused(paused || !autoplay);
+            }
+        } finally {
+            audioOpening = false;
+        }
     }
 
     private void applyAudioRuntime() {
-        if (audio == null) {
-            if (shouldPreload() && !muted) {
-                ensureAudio();
-            }
-            return;
-        }
+        if (audio == null) return;
         audio.setMuted(muted);
         audio.setVolume(volume);
         audio.setPaused(paused || !autoplay);

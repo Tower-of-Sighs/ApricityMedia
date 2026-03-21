@@ -8,7 +8,7 @@ public class ApricityMedia {
     public static final String MOD_ID = "apricitymedia";
 
     public ApricityMedia() {
-        FFmpegRuntimeBootstrap.prewarmAsync();
+        FFmpegRuntimeBootstrap.initializeOnStartup();
         ApricityUIRegistry.scanPackage("cc.sighs.apricitymedia.element");
     }
 }

@@ -57,6 +57,7 @@ public final class ApricityMediaClient {
             if (now - lastScreenToggleAtMs < 120L) {
                 continue;
             }
+            LOGGER.info("ApricityMediaClient OPEN_DEMO click on tick, deltaSinceScreenToggle={}ms", now - lastScreenToggleAtMs);
             toggleDemoDebounced();
         }
         Screen currentScreen = Minecraft.getInstance().screen;
@@ -68,19 +69,30 @@ public final class ApricityMediaClient {
         if (!OPEN_DEMO.matches(event.getKeyCode(), event.getScanCode())) {
             return;
         }
+        LOGGER.info("ApricityMediaClient OPEN_DEMO key pressed on screen={}, keyCode={}, scanCode={}",
+                event.getScreen() != null ? event.getScreen().getClass().getName() : "null",
+                event.getKeyCode(),
+                event.getScanCode());
         lastScreenToggleAtMs = System.currentTimeMillis();
         toggleDemoDebounced();
     }
 
     private static void toggleDemoDebounced() {
         long now = System.currentTimeMillis();
-        if (now - lastToggleAtMs < 150L) return;
+        long delta = now - lastToggleAtMs;
+        if (delta < 150L) {
+            LOGGER.info("ApricityMediaClient toggleDemoDebounced skip due to debounce, delta={}ms", delta);
+            return;
+        }
         lastToggleAtMs = now;
+        LOGGER.info("ApricityMediaClient toggleDemoDebounced proceed, now={}, lastToggleAtMs={}", now, lastToggleAtMs);
         toggleDemo();
     }
 
     private static void toggleDemo() {
-        if (Document.get(DEMO_PATH).isEmpty()) {
+        boolean exists = !Document.get(DEMO_PATH).isEmpty();
+        LOGGER.info("ApricityMediaClient toggleDemo current document exists={}", exists);
+        if (!exists) {
             Document.create(DEMO_PATH);
         } else {
             Document.remove(DEMO_PATH);
@@ -96,10 +108,21 @@ public final class ApricityMediaClient {
             return;
         }
         if (titleScreenTicks < 20) return;
-        if (!FFmpegRuntimeBootstrap.hasInitFailure()) return;
-        if (Document.create(INIT_FAIL_TIP_PATH) != null || Document.create(INIT_FAIL_TIP_FALLBACK_PATH) != null) {
+        boolean hasFailure = FFmpegRuntimeBootstrap.hasInitFailure();
+        if (!hasFailure) return;
+        LOGGER.warn("ApricityMediaClient detected FFmpeg init failure on title screen, error={}",
+                FFmpegRuntimeBootstrap.getInitErrorMessage());
+        boolean createdPrimary = Document.create(INIT_FAIL_TIP_PATH) != null;
+        boolean createdFallback = false;
+        if (!createdPrimary) {
+            createdFallback = Document.create(INIT_FAIL_TIP_FALLBACK_PATH) != null;
+        }
+        if (createdPrimary || createdFallback) {
             initFailTipShown = true;
-            LOGGER.warn("FFmpeg runtime init failed, showing tip: {}", FFmpegRuntimeBootstrap.getInitErrorMessage());
+            LOGGER.warn("FFmpeg runtime init failed, showing tip, primaryCreated={}, fallbackCreated={}",
+                    createdPrimary, createdFallback);
+        } else {
+            LOGGER.warn("FFmpeg runtime init failed, but tip document creation failed for both paths");
         }
     }
 }

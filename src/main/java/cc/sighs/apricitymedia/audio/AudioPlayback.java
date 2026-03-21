@@ -56,11 +56,14 @@ public final class AudioPlayback implements AutoCloseable {
 
     public static AudioPlayback open(String resolvedPath, boolean loop, boolean muted, double volume, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect) {
         if (!FFmpegRuntimeBootstrap.ensureReady()) {
-            LOGGER.warn("Open audio playback skipped, FFmpeg runtime not ready: {}", FFmpegRuntimeBootstrap.getInitErrorMessage());
+            LOGGER.warn("AudioPlayback open aborted, runtime not ready, source={}, reason={}", resolvedPath, FFmpegRuntimeBootstrap.getInitErrorMessage());
             return null;
         }
         SourceHandle handle = prepareSource(resolvedPath);
-        if (handle == null || handle.source == null || handle.source.isBlank()) return null;
+        if (handle == null || handle.source == null || handle.source.isBlank()) {
+            LOGGER.warn("AudioPlayback open failed to prepare source={}", resolvedPath);
+            return null;
+        }
         return new AudioPlayback(handle.source, handle.cleanupFile, loop, muted, volume, networkTimeoutMs, networkBufferKb, networkReconnect);
     }
 
