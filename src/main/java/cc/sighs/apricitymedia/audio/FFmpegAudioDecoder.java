@@ -6,8 +6,8 @@ import org.bytedeco.ffmpeg.avcodec.AVPacket;
 import org.bytedeco.ffmpeg.avformat.AVFormatContext;
 import org.bytedeco.ffmpeg.avformat.AVStream;
 import org.bytedeco.ffmpeg.avutil.AVChannelLayout;
-import org.bytedeco.ffmpeg.avutil.AVFrame;
 import org.bytedeco.ffmpeg.avutil.AVDictionary;
+import org.bytedeco.ffmpeg.avutil.AVFrame;
 import org.bytedeco.ffmpeg.global.avcodec;
 import org.bytedeco.ffmpeg.global.avformat;
 import org.bytedeco.ffmpeg.global.avutil;
@@ -18,9 +18,10 @@ import org.bytedeco.javacpp.PointerPointer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public final class FFmpegAudioDecoder implements AutoCloseable {
+public final class FFmpegAudioDecoder implements IAudioDecoder {
     private static final Logger LOGGER = LoggerFactory.getLogger(FFmpegAudioDecoder.class);
     private static final AtomicBoolean LOG_LEVEL_INITIALIZED = new AtomicBoolean(false);
     private static final int OUT_SAMPLE_RATE = 48000;
@@ -37,8 +38,14 @@ public final class FFmpegAudioDecoder implements AutoCloseable {
     private final AVChannelLayout inLayout;
 
     private boolean eof = false;
+    private final PointerPointer<BytePointer> outPtrs = new PointerPointer<>(1);
+    private boolean drainStarted = false;
+    private BytePointer outBuffer;
+    private int outBufferCapacity = 0;
+    private int pendingBytes = 0;
+    private int pendingPos = 0;
 
-    public FFmpegAudioDecoder(String filePath, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect) {
+    public FFmpegAudioDecoder(String filePath, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect, Map<String, String> networkOptions) {
         ensureLogLevel();
         avformat.avformat_network_init();
 
@@ -58,6 +65,12 @@ public final class FFmpegAudioDecoder implements AutoCloseable {
             avutil.av_dict_set(options, "multiple_requests", "1", 0);
             avutil.av_dict_set(options, "analyzeduration", "5000000", 0);
             avutil.av_dict_set(options, "probesize", "1048576", 0);
+            // Apply per-element custom options
+            if (networkOptions != null) {
+                for (Map.Entry<String, String> entry : networkOptions.entrySet()) {
+                    avutil.av_dict_set(options, entry.getKey(), entry.getValue(), 0);
+                }
+            }
         }
         if (avformat.avformat_open_input(formatContext, filePath, null, options) < 0) {
             if (options != null) avutil.av_dict_free(options);
@@ -81,7 +94,7 @@ public final class FFmpegAudioDecoder implements AutoCloseable {
                 break;
             }
         }
-        if (streamIndex < 0 || stream == null) {
+        if (streamIndex < 0) {
             LOGGER.error("FFmpeg audio stream not found for {}", filePath);
             throw new IllegalStateException("No audio stream found: " + filePath);
         }
@@ -136,38 +149,92 @@ public final class FFmpegAudioDecoder implements AutoCloseable {
         }
     }
 
-    public byte[] readNextPcmChunk() {
-        if (eof) {
-            return drainDecoder();
-        }
+    private static boolean isRemotePath(String path) {
+        if (path == null) return false;
+        String v = path.trim().toLowerCase();
+        return v.contains("://")
+                || v.contains("rtsp:")
+                || v.contains("rtmp:")
+                || v.contains("mms:");
+    }
 
-        while (avformat.av_read_frame(formatContext, packet) >= 0) {
-            try {
-                if (packet.stream_index() != audioStreamIndex) continue;
-                int sent = avcodec.avcodec_send_packet(codecContext, packet);
-                if (sent < 0) continue;
-                byte[] out = receivePcm();
-                if (out != null && out.length > 0) return out;
-            } finally {
-                avcodec.av_packet_unref(packet);
+    @Override
+    public int readNextPcmChunk(byte[] out, int offset, int length) {
+        if (out == null || length <= 0) return 0;
+        if (offset < 0 || offset >= out.length) return 0;
+        length = Math.min(length, out.length - offset);
+
+        // Serve pending bytes first.
+        int copied = copyPending(out, offset, length);
+        if (copied != 0) return copied;
+
+        while (true) {
+            if (eof) {
+                if (!drainStarted) {
+                    drainStarted = true;
+                    avcodec.avcodec_send_packet(codecContext, null);
+                }
+                int produced = receivePcmToPending();
+                if (produced <= 0) return -1;
+                copied = copyPending(out, offset, length);
+                if (copied != 0) return copied;
+                continue;
             }
-        }
 
-        eof = true;
-        avcodec.avcodec_send_packet(codecContext, null);
-        return drainDecoder();
+            // Read packets until we can produce some audio.
+            while (avformat.av_read_frame(formatContext, packet) >= 0) {
+                try {
+                    if (packet.stream_index() != audioStreamIndex) continue;
+                    int sent = avcodec.avcodec_send_packet(codecContext, packet);
+                    if (sent < 0) continue;
+                    int produced = receivePcmToPending();
+                    if (produced > 0) {
+                        copied = copyPending(out, offset, length);
+                        if (copied != 0) return copied;
+                    }
+                } finally {
+                    avcodec.av_packet_unref(packet);
+                }
+            }
+
+            eof = true;
+        }
+    }
+
+    @Override
+    public long getDurationMs() {
+        long dur = formatContext.duration();
+        if (dur <= 0 || dur == avutil.AV_NOPTS_VALUE()) return -1;
+        return dur / 1000;
     }
 
     public void rewind() {
         eof = false;
+        drainStarted = false;
+        pendingBytes = 0;
+        pendingPos = 0;
         avformat.av_seek_frame(formatContext, audioStreamIndex, 0, avformat.AVSEEK_FLAG_BACKWARD);
         avcodec.avcodec_flush_buffers(codecContext);
         swresample.swr_close(swr);
         swresample.swr_init(swr);
     }
 
+    public int outSampleRate() {
+        return OUT_SAMPLE_RATE;
+    }
+
+    public int outChannels() {
+        return OUT_CHANNELS;
+    }
+
     @Override
     public void close() {
+        try {
+            if (outBuffer != null) {
+                avutil.av_free(outBuffer);
+            }
+        } catch (Exception ignored) {
+        }
         try {
             avcodec.av_packet_free(packet);
         } catch (Exception ignored) {
@@ -198,67 +265,71 @@ public final class FFmpegAudioDecoder implements AutoCloseable {
         }
     }
 
-    public int outSampleRate() {
-        return OUT_SAMPLE_RATE;
-    }
-
-    public int outChannels() {
-        return OUT_CHANNELS;
-    }
-
-    private static boolean isRemotePath(String path) {
-        if (path == null) return false;
-        String v = path.trim().toLowerCase();
-        return v.startsWith("http://")
-                || v.startsWith("https://")
-                || v.startsWith("rtsp://")
-                || v.startsWith("rtmp://")
-                || v.startsWith("mms://");
-    }
-
     private static void ensureLogLevel() {
         if (LOG_LEVEL_INITIALIZED.compareAndSet(false, true)) {
             avutil.av_log_set_level(avutil.AV_LOG_ERROR);
         }
     }
 
-    private byte[] drainDecoder() {
-        return receivePcm();
+    private int copyPending(byte[] out, int offset, int length) {
+        int available = pendingBytes - pendingPos;
+        if (available <= 0) return 0;
+        int toCopy = Math.min(length, available);
+        BytePointer current = outBuffer;
+        if (current == null) return 0;
+        current.position(pendingPos);
+        current.get(out, offset, toCopy);
+        pendingPos += toCopy;
+        if (pendingPos >= pendingBytes) {
+            pendingPos = 0;
+            pendingBytes = 0;
+        }
+        return toCopy;
     }
 
-    private byte[] receivePcm() {
+    private int receivePcmToPending() {
         int ret = avcodec.avcodec_receive_frame(codecContext, frame);
-        if (ret == avutil.AVERROR_EAGAIN() || ret == avutil.AVERROR_EOF()) return null;
-        if (ret < 0) return null;
+        if (ret == avutil.AVERROR_EAGAIN() || ret == avutil.AVERROR_EOF()) return 0;
+        if (ret < 0) return 0;
 
         int inSamples = frame.nb_samples();
-        if (inSamples <= 0) return null;
+        if (inSamples <= 0) return 0;
 
         int outSamples = swresample.swr_get_out_samples(swr, inSamples);
-        if (outSamples <= 0) return null;
+        if (outSamples <= 0) return 0;
 
         int outLineSize = 0;
         int outBufSize = avutil.av_samples_get_buffer_size(new int[]{outLineSize}, OUT_CHANNELS, outSamples, OUT_SAMPLE_FMT, 1);
-        if (outBufSize <= 0) return null;
+        if (outBufSize <= 0) return 0;
 
-        BytePointer outBuffer = new BytePointer(avutil.av_malloc(outBufSize)).capacity(outBufSize);
-        PointerPointer outPtrs = new PointerPointer(1).put(outBuffer);
+        ensureOutCapacity(outBufSize);
+        outBuffer.position(0);
+        outPtrs.put(outBuffer);
+
         int converted = swresample.swr_convert(swr, outPtrs, outSamples, frame.data(), inSamples);
         if (converted <= 0) {
-            avutil.av_free(outBuffer);
-            return null;
+            pendingBytes = 0;
+            pendingPos = 0;
+            return 0;
         }
 
         int bytes = avutil.av_samples_get_buffer_size(new int[]{0}, OUT_CHANNELS, converted, OUT_SAMPLE_FMT, 1);
-        if (bytes <= 0) {
-            avutil.av_free(outBuffer);
-            return null;
-        }
+        if (bytes <= 0) return 0;
 
-        byte[] result = new byte[bytes];
-        outBuffer.position(0);
-        outBuffer.get(result);
-        avutil.av_free(outBuffer);
-        return result;
+        pendingPos = 0;
+        pendingBytes = bytes;
+        return bytes;
+    }
+
+    private void ensureOutCapacity(int requiredBytes) {
+        if (outBuffer != null && outBufferCapacity >= requiredBytes) return;
+        try {
+            if (outBuffer != null) {
+                avutil.av_free(outBuffer);
+            }
+        } catch (Exception ignored) {
+        }
+        outBuffer = new BytePointer(avutil.av_malloc(requiredBytes)).capacity(requiredBytes);
+        outBufferCapacity = requiredBytes;
     }
 }

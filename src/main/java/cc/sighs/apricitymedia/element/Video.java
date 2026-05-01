@@ -1,6 +1,7 @@
 package cc.sighs.apricitymedia.element;
 
 import cc.sighs.apricitymedia.audio.AudioPlayback;
+import cc.sighs.apricitymedia.hls.HlsMasterPlaylist;
 import cc.sighs.apricitymedia.video.VideoFrame;
 import cc.sighs.apricitymedia.video.VideoPlayer;
 import com.mojang.blaze3d.platform.NativeImage;
@@ -19,10 +20,11 @@ import com.sighs.apricityui.style.Size;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
+import org.lwjgl.system.MemoryUtil;
 
-import java.util.Locale;
-import java.util.Objects;
-import java.util.UUID;
+import java.lang.reflect.Field;
+import java.nio.ByteBuffer;
+import java.util.*;
 
 @ElementRegister(Video.TAG_NAME)
 public class Video extends Element {
@@ -44,6 +46,7 @@ public class Video extends Element {
     private static final String ATTR_NETWORK_TIMEOUT_MS = "network-timeout-ms";
     private static final String ATTR_NETWORK_BUFFER_KB = "network-buffer-kb";
     private static final String ATTR_NETWORK_RECONNECT = "network-reconnect";
+    private static final String ATTR_HLS_POLICY = "hls-policy";
 
     private String resolvedSrc = "";
     private String resolvedPoster = "";
@@ -60,6 +63,8 @@ public class Video extends Element {
     private int networkTimeoutMs = 15000;
     private int networkBufferKb = 512;
     private boolean networkReconnect = true;
+    private static volatile Field NATIVE_IMAGE_PIXELS_FIELD;
+    private final Map<String, String> networkOptions = new HashMap<>();
 
     private VideoPlayer player;
     private AudioPlayback audio;
@@ -72,12 +77,25 @@ public class Video extends Element {
     private long pauseAccumulatedMs = 0;
     private long pausedAtMs = -1;
     private boolean lastPaused = false;
+    private String hlsPolicy = "auto";
+    // Media state for web-compatible API and events
+    private double mediaDurationSecs = -1;
+    private double mediaCurrentTimeSecs = 0;
+    private boolean mediaEnded = false;
+    private int readyState = 0;
+    private int networkState = 0;
+    private boolean mediaHasFiredLoadedMetadata = false;
+    private boolean mediaHasFiredCanPlay = false;
+    private long mediaLastTimeUpdateMs = 0;
+    private boolean mediaPrevPaused = false;
+    private boolean mediaPrevMuted = false;
 
     private NativeImage nativeImage;
     private DynamicTexture dynamicTexture;
     private ResourceLocation textureLocation;
     private int frameW = 0;
     private int frameH = 0;
+    private double mediaPrevVolume = 1.0;
 
     private final String textureId = UUID.randomUUID().toString().replace("-", "");
 
@@ -93,64 +111,37 @@ public class Video extends Element {
         }
     }
 
-    @Override
-    public void setAttribute(String name, String value) {
-        String key = normalizeAttr(name);
-        String beforeSrc = getAttribute(ATTR_SRC);
-        super.setAttribute(name, value);
-        if (Objects.equals(key, ATTR_SRC) && !Objects.equals(beforeSrc, getAttribute(ATTR_SRC))) {
-            syncFromAttributes();
-            restartPlayer();
-            return;
-        }
-        if (shouldRestartForKey(key)) {
-            syncFromAttributes();
-            restartPlayer();
-            return;
-        }
-        if (Objects.equals(key, ATTR_AUTOPLAY) || Objects.equals(key, ATTR_LOOP) || Objects.equals(key, ATTR_PAUSED)) {
-            syncFromAttributes();
-            if (shouldPreload()) {
-                ensurePlayer();
-            }
+    private static void closeFrame(VideoFrame frame) {
+        if (frame == null) return;
+        try {
+            frame.close();
+        } catch (Exception ignored) {
         }
     }
 
-    @Override
-    public void removeAttribute(String name) {
-        String key = normalizeAttr(name);
-        String beforeSrc = getAttribute(ATTR_SRC);
-        super.removeAttribute(name);
-        if (Objects.equals(key, ATTR_SRC) && !Objects.equals(beforeSrc, getAttribute(ATTR_SRC))) {
-            syncFromAttributes();
-            restartPlayer();
-            return;
-        }
-        if (shouldRestartForKey(key)) {
-            syncFromAttributes();
-            restartPlayer();
-            return;
-        }
-        if (Objects.equals(key, ATTR_AUTOPLAY) || Objects.equals(key, ATTR_LOOP) || Objects.equals(key, ATTR_PAUSED)) {
-            syncFromAttributes();
-            if (shouldPreload()) {
-                ensurePlayer();
+    private static long nativeImagePixelsAddress(NativeImage image) {
+        if (image == null) return 0L;
+        try {
+            Field field = NATIVE_IMAGE_PIXELS_FIELD;
+            if (field == null) {
+                synchronized (Video.class) {
+                    field = NATIVE_IMAGE_PIXELS_FIELD;
+                    if (field == null) {
+                        field = NativeImage.class.getDeclaredField("pixels");
+                        field.setAccessible(true);
+                        NATIVE_IMAGE_PIXELS_FIELD = field;
+                    }
+                }
             }
+            return field.getLong(image);
+        } catch (Exception ignored) {
+            return 0L;
         }
     }
 
-    @Override
-    public void tick() {
-        super.tick();
-
-        if (resolvedSrc.isEmpty()) return;
-        if (player == null && shouldPreload()) {
-            ensurePlayer();
-        }
-        if (audio == null && shouldPreload() && !muted) {
-            ensureAudio();
-        }
-        applyAudioRuntime();
+    /** Select the highest-bandwidth variant from an HLS master playlist. */
+    public static String hlsHighest(String masterUrl) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH, 8000);
     }
 
     @Override
@@ -206,53 +197,14 @@ public class Video extends Element {
         ImageDrawer.draw(poseStack, textureLocation, x, y, width, height, blur);
     }
 
-    private void syncFromAttributes() {
-        String rawSrc = getAttribute(ATTR_SRC);
-        if (rawSrc == null || rawSrc.isBlank()) {
-            resolvedSrc = "";
-        } else {
-            String contextPath = document != null ? document.getPath() : "";
-            resolvedSrc = Loader.resolve(contextPath, rawSrc);
-        }
-
-        String rawPoster = getAttribute(ATTR_POSTER);
-        if (rawPoster == null || rawPoster.isBlank()) {
-            resolvedPoster = "";
-        } else {
-            String contextPath = document != null ? document.getPath() : "";
-            resolvedPoster = Loader.resolve(contextPath, rawPoster);
-        }
-
-        preload = normalizePreload(getAttribute(ATTR_PRELOAD));
-        autoplay = isTruthyAttr(ATTR_AUTOPLAY);
-        loop = isTruthyAttr(ATTR_LOOP);
-        paused = isTruthyAttr(ATTR_PAUSED);
-        muted = isTruthyAttr(ATTR_MUTED);
-        volume = clamp01(parseDouble(getAttribute(ATTR_VOLUME), 1.0));
-        decodeWidth = parseInt(getAttribute(ATTR_DECODE_WIDTH), -1);
-        decodeHeight = parseInt(getAttribute(ATTR_DECODE_HEIGHT), -1);
-        maxFps = Math.max(0, parseDouble(getAttribute(ATTR_MAX_FPS), 0));
-        dropFrames = parseBoolean(getAttribute(ATTR_DROP_FRAMES), true);
-        networkTimeoutMs = Math.max(1000, parseInt(getAttribute(ATTR_NETWORK_TIMEOUT_MS), 15000));
-        networkBufferKb = Math.max(64, parseInt(getAttribute(ATTR_NETWORK_BUFFER_KB), 512));
-        networkReconnect = parseBoolean(getAttribute(ATTR_NETWORK_RECONNECT), true);
+    /** Select the highest-bandwidth variant with a custom timeout. */
+    public static String hlsHighest(String masterUrl, int timeoutMs) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH, timeoutMs);
     }
 
-    private void ensurePlayer() {
-        if (player != null) return;
-        if (resolvedSrc.isEmpty()) return;
-        player = VideoPlayer.open(
-                resolvedSrc,
-                loop,
-                decodeWidth,
-                decodeHeight,
-                maxFps,
-                dropFrames ? 16 : 64,
-                networkTimeoutMs,
-                networkBufferKb,
-                networkReconnect
-        );
-        ensureAudio();
+    /** Select the lowest-bandwidth variant from an HLS master playlist. */
+    public static String hlsLowest(String masterUrl) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH, 8000);
     }
 
     private void restartPlayer() {
@@ -260,44 +212,36 @@ public class Video extends Element {
         ensurePlayer();
     }
 
-    private void closePlayer() {
-        VideoPlayer oldPlayer = player;
-        player = null;
-        if (oldPlayer != null) {
-            oldPlayer.close();
-        }
-        closeAudio();
-        currentFrame = null;
-        pendingFrame = null;
-        pendingDisplayAtMs = 0;
-        playbackStartMs = -1;
-        basePtsMs = 0;
-        pauseAccumulatedMs = 0;
-        pausedAtMs = -1;
-        lastPaused = false;
-        destroyTexture();
+    /** Select the lowest-bandwidth variant with a custom timeout. */
+    public static String hlsLowest(String masterUrl, int timeoutMs) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH, timeoutMs);
     }
 
-    private void applyFrame(VideoFrame frame) {
-        if (frame == null) return;
-        ensureTexture(frame.width(), frame.height());
-        if (nativeImage == null || dynamicTexture == null) return;
+    /** Select an HLS variant by policy name: "highest", "lowest", "highest-resolution", "lowest-resolution". */
+    public static String hlsSelect(String masterUrl, String policyName) {
+        return hlsSelect(masterUrl, policyName, 8000);
+    }
 
-        int[] pixels = frame.pixelsAbgr();
-        int w = frame.width();
-        int h = frame.height();
+    /** Select an HLS variant by policy name with a custom timeout. */
+    public static String hlsSelect(String masterUrl, String policyName, int timeoutMs) {
+        HlsMasterPlaylist.Policy policy = parseHlsPolicy(policyName);
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, policy, timeoutMs);
+    }
 
-        RenderSystem.recordRenderCall(() -> {
-            if (nativeImage == null || dynamicTexture == null) return;
-            if (nativeImage.getWidth() != w || nativeImage.getHeight() != h) return;
-            int idx = 0;
-            for (int y = 0; y < h; y++) {
-                for (int x = 0; x < w; x++) {
-                    nativeImage.setPixelRGBA(x, y, pixels[idx++]);
-                }
-            }
-            dynamicTexture.upload();
-        });
+    private static HlsMasterPlaylist.Policy parseHlsPolicy(String policyName) {
+        if (policyName == null || policyName.isBlank()) return HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH;
+        String v = policyName.trim().toLowerCase(Locale.ROOT);
+        return switch (v) {
+            case "lowest", "low", "lowest_bandwidth", "lowest-bandwidth" -> HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH;
+            case "highest_resolution", "highest-resolution", "hires", "resolution" -> HlsMasterPlaylist.Policy.HIGHEST_RESOLUTION;
+            case "lowest_resolution", "lowest-resolution", "lores" -> HlsMasterPlaylist.Policy.LOWEST_RESOLUTION;
+            default -> HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH;
+        };
+    }
+
+    private static String normalizeHlsPolicy(String value) {
+        if (value == null || value.isBlank()) return "auto";
+        return value.trim().toLowerCase(Locale.ROOT);
     }
 
     private void ensureTexture(int w, int h) {
@@ -363,6 +307,237 @@ public class Video extends Element {
         lastPaused = paused;
     }
 
+    private static boolean isRemoteUrl(String url) {
+        if (url == null) return false;
+        String v = url.trim().toLowerCase();
+        return v.startsWith("http://") || v.startsWith("https://")
+                || v.startsWith("rtsp://") || v.startsWith("rtmp://") || v.startsWith("mms://");
+    }
+
+    private static HlsMasterPlaylist.Policy parsePolicy(String policy, boolean isVideo) {
+        if (policy == null || policy.isBlank()) {
+            return isVideo ? HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH : HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH;
+        }
+        return switch (policy) {
+            case "lowest", "low", "lowest_bandwidth", "lowest-bandwidth" -> HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH;
+            case "highest_resolution", "highest-resolution", "hires", "resolution", "bestres" -> HlsMasterPlaylist.Policy.HIGHEST_RESOLUTION;
+            case "lowest_resolution", "lowest-resolution", "lores" -> HlsMasterPlaylist.Policy.LOWEST_RESOLUTION;
+            default -> HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH;
+        };
+    }
+
+    private void applyAudioRuntime() {
+        if (audio == null) return;
+        audio.setMuted(muted);
+        audio.setVolume(volume);
+        audio.setPaused(paused || !autoplay);
+    }
+
+    private void closeAudio() {
+        AudioPlayback old = audio;
+        audio = null;
+        if (old != null) {
+            old.close();
+        }
+    }
+
+    public void closeMedia() {
+        closePlayer();
+    }
+
+    // ── Browser-standard media control API ──
+
+    @Override
+    public void setAttribute(String name, String value) {
+        String key = normalizeAttr(name);
+        String beforeSrc = getAttribute(ATTR_SRC);
+        super.setAttribute(name, value);
+        if (Objects.equals(key, ATTR_SRC) && !Objects.equals(beforeSrc, getAttribute(ATTR_SRC))) {
+            syncFromAttributes();
+            restartPlayer();
+            return;
+        }
+        if (shouldRestartForKey(key)) {
+            syncFromAttributes();
+            restartPlayer();
+            return;
+        }
+        if (Objects.equals(key, ATTR_AUTOPLAY) || Objects.equals(key, ATTR_LOOP) || Objects.equals(key, ATTR_PAUSED)
+                || Objects.equals(key, ATTR_MUTED) || Objects.equals(key, ATTR_VOLUME)) {
+            syncFromAttributes();
+            if (shouldPreload()) {
+                ensurePlayer();
+            }
+        }
+    }
+
+    @Override
+    public void removeAttribute(String name) {
+        String key = normalizeAttr(name);
+        String beforeSrc = getAttribute(ATTR_SRC);
+        super.removeAttribute(name);
+        if (Objects.equals(key, ATTR_SRC) && !Objects.equals(beforeSrc, getAttribute(ATTR_SRC))) {
+            syncFromAttributes();
+            restartPlayer();
+            return;
+        }
+        if (shouldRestartForKey(key)) {
+            syncFromAttributes();
+            restartPlayer();
+            return;
+        }
+        if (Objects.equals(key, ATTR_AUTOPLAY) || Objects.equals(key, ATTR_LOOP) || Objects.equals(key, ATTR_PAUSED)
+                || Objects.equals(key, ATTR_MUTED) || Objects.equals(key, ATTR_VOLUME)) {
+            syncFromAttributes();
+            if (shouldPreload()) {
+                ensurePlayer();
+            }
+        }
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+
+        if (resolvedSrc.isEmpty()) {
+            networkState = 0; // NETWORK_EMPTY
+            return;
+        }
+        if (player == null && shouldPreload()) {
+            ensurePlayer();
+        }
+        if (audio == null && shouldPreload() && !muted) {
+            ensureAudio();
+        }
+        applyAudioRuntime();
+        fireMediaEvents();
+    }
+
+    // ── Media property getters ──
+
+    private void syncFromAttributes() {
+        String rawSrc = getAttribute(ATTR_SRC);
+        if (rawSrc == null || rawSrc.isBlank()) {
+            resolvedSrc = "";
+        } else if (isRemoteUrl(rawSrc)) {
+            resolvedSrc = rawSrc.trim();
+        } else {
+            String contextPath = document != null ? document.getPath() : "";
+            resolvedSrc = Loader.resolve(contextPath, rawSrc);
+        }
+
+        String rawPoster = getAttribute(ATTR_POSTER);
+        if (rawPoster == null || rawPoster.isBlank()) {
+            resolvedPoster = "";
+        } else if (isRemoteUrl(rawPoster)) {
+            resolvedPoster = rawPoster.trim();
+        } else {
+            String contextPath = document != null ? document.getPath() : "";
+            resolvedPoster = Loader.resolve(contextPath, rawPoster);
+        }
+
+        preload = normalizePreload(getAttribute(ATTR_PRELOAD));
+        autoplay = isTruthyAttr(ATTR_AUTOPLAY);
+        loop = isTruthyAttr(ATTR_LOOP);
+        paused = isTruthyAttr(ATTR_PAUSED);
+        muted = isTruthyAttr(ATTR_MUTED);
+        volume = clamp01(parseDouble(getAttribute(ATTR_VOLUME), 1.0));
+        decodeWidth = parseInt(getAttribute(ATTR_DECODE_WIDTH), -1);
+        decodeHeight = parseInt(getAttribute(ATTR_DECODE_HEIGHT), -1);
+        maxFps = Math.max(0, parseDouble(getAttribute(ATTR_MAX_FPS), 0));
+        dropFrames = parseBoolean(getAttribute(ATTR_DROP_FRAMES), true);
+        networkTimeoutMs = Math.max(1000, parseInt(getAttribute(ATTR_NETWORK_TIMEOUT_MS), 15000));
+        networkBufferKb = Math.max(64, parseInt(getAttribute(ATTR_NETWORK_BUFFER_KB), 512));
+        networkReconnect = parseBoolean(getAttribute(ATTR_NETWORK_RECONNECT), true);
+        hlsPolicy = normalizeHlsPolicy(getAttribute(ATTR_HLS_POLICY));
+    }
+
+    private void ensurePlayer() {
+        if (player != null) return;
+        if (resolvedSrc.isEmpty()) return;
+        String selected = resolveHlsForVideo(resolvedSrc);
+        player = VideoPlayer.open(
+                selected,
+                loop,
+                dropFrames,
+                decodeWidth,
+                decodeHeight,
+                maxFps,
+                dropFrames ? 16 : 64,
+                networkTimeoutMs,
+                networkBufferKb,
+                networkReconnect,
+                networkOptions
+        );
+        ensureAudio();
+    }
+
+    private void closePlayer() {
+        VideoPlayer oldPlayer = player;
+        player = null;
+        closeFrame(currentFrame);
+        closeFrame(pendingFrame);
+        if (oldPlayer != null) {
+            oldPlayer.close();
+        }
+        closeAudio();
+        currentFrame = null;
+        pendingFrame = null;
+        pendingDisplayAtMs = 0;
+        playbackStartMs = -1;
+        basePtsMs = 0;
+        pauseAccumulatedMs = 0;
+        pausedAtMs = -1;
+        lastPaused = false;
+        destroyTexture();
+    }
+
+    private void applyFrame(VideoFrame frame) {
+        if (frame == null) return;
+        ensureTexture(frame.width(), frame.height());
+        if (nativeImage == null || dynamicTexture == null) {
+            closeFrame(frame);
+            return;
+        }
+
+        int w = frame.width();
+        int h = frame.height();
+        int bytes = frame.pixelBytes();
+        ByteBuffer pixels = frame.pixelsRgba();
+
+        if (RenderSystem.isOnRenderThreadOrInit()) {
+            uploadFrame(frame, pixels, w, h, bytes);
+        } else {
+            RenderSystem.recordRenderCall(() -> uploadFrame(frame, pixels, w, h, bytes));
+        }
+    }
+
+    private void uploadFrame(VideoFrame frame, ByteBuffer pixels, int w, int h, int bytes) {
+        if (nativeImage == null || dynamicTexture == null) {
+            closeFrame(frame);
+            return;
+        }
+        if (nativeImage.getWidth() != w || nativeImage.getHeight() != h) {
+            closeFrame(frame);
+            return;
+        }
+        if (pixels == null || !pixels.isDirect()) {
+            closeFrame(frame);
+            return;
+        }
+        long dst = nativeImagePixelsAddress(nativeImage);
+        if (dst == 0L) {
+            closeFrame(frame);
+            return;
+        }
+
+        ByteBuffer src = pixels.duplicate();
+        src.clear();
+        MemoryUtil.memCopy(MemoryUtil.memAddress(src), dst, bytes);
+        dynamicTexture.upload();
+        closeFrame(frame);
+    }
+
     private void pumpFramesForTime(long nowMs) {
         long effectiveNow = nowMs - pauseAccumulatedMs;
         VideoFrame toPresent = null;
@@ -386,6 +561,10 @@ public class Video extends Element {
 
             pendingFrame = null;
             pendingDisplayAtMs = 0;
+
+            if (toPresent != null && dropFrames && hasPresentedFrame) {
+                closeFrame(toPresent);
+            }
             toPresent = next;
             if (!dropFrames || !hasPresentedFrame) break;
         }
@@ -409,7 +588,8 @@ public class Video extends Element {
         if (resolvedSrc.isEmpty()) return;
         audioOpening = true;
         try {
-            audio = AudioPlayback.open(resolvedSrc, loop, muted, volume, networkTimeoutMs, networkBufferKb, networkReconnect);
+            String selected = resolveHlsForVideo(resolvedSrc);
+            audio = AudioPlayback.open(selected, loop, muted, volume, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions);
             if (audio != null) {
                 audio.setMuted(muted);
                 audio.setVolume(volume);
@@ -420,23 +600,212 @@ public class Video extends Element {
         }
     }
 
-    private void applyAudioRuntime() {
-        if (audio == null) return;
-        audio.setMuted(muted);
-        audio.setVolume(volume);
-        audio.setPaused(paused || !autoplay);
+    /** Start or resume playback. Equivalent to setting autoplay=true and paused=false. */
+    public void play() {
+        autoplay = true;
+        paused = false;
+        mediaEnded = false;
+        setAttribute("autoplay", "true");
+        setAttribute("paused", "false");
     }
 
-    private void closeAudio() {
-        AudioPlayback old = audio;
-        audio = null;
-        if (old != null) {
-            old.close();
+    /** Pause playback. Equivalent to setting paused=true. */
+    public void pause() {
+        paused = true;
+        setAttribute("paused", "true");
+    }
+
+    /** Reload the media source from the current src attribute. */
+    public void load() {
+        mediaEnded = false;
+        mediaDurationSecs = -1;
+        mediaCurrentTimeSecs = 0;
+        mediaHasFiredLoadedMetadata = false;
+        mediaHasFiredCanPlay = false;
+        readyState = 0;
+        syncFromAttributes();
+        restartPlayer();
+    }
+
+    /** Current playback position in seconds, or 0 if unknown. */
+    public double getCurrentTime() {
+        return mediaCurrentTimeSecs;
+    }
+
+    // ── Media property setters ──
+
+    /** Media duration in seconds, or -1 if unknown (maps to NaN in JS). */
+    public double getDuration() {
+        return mediaDurationSecs;
+    }
+
+    /** Whether playback is currently paused. */
+    public boolean isPaused() {
+        return paused;
+    }
+
+    /** Whether playback has reached the end of the media. */
+    public boolean isEnded() {
+        return mediaEnded;
+    }
+
+    // ── HLS variant selection (callable from JS) ──
+
+    /** HTMLMediaElement readyState: 0=HAVE_NOTHING, 1=HAVE_METADATA, 2=HAVE_CURRENT_DATA, 3=HAVE_FUTURE_DATA, 4=HAVE_ENOUGH_DATA. */
+    public int getReadyState() {
+        return readyState;
+    }
+
+    /** HTMLMediaElement networkState: 0=NETWORK_EMPTY, 1=NETWORK_IDLE, 2=NETWORK_LOADING, 3=NETWORK_NO_SOURCE. */
+    public int getNetworkState() {
+        return networkState;
+    }
+
+    /** Current source URL. */
+    public String getSrc() {
+        return resolvedSrc;
+    }
+
+    /** Current volume [0.0, 1.0]. */
+    public double getVolume() {
+        return volume;
+    }
+
+    /** Set volume [0.0, 1.0]. */
+    public void setVolume(double v) {
+        volume = clamp01(v);
+        setAttribute("volume", String.valueOf(volume));
+        if (audio != null) audio.setVolume(volume);
+    }
+
+    /** Whether audio is muted. */
+    public boolean isMuted() {
+        return muted;
+    }
+
+    /** Set muted state. */
+    public void setMuted(boolean m) {
+        muted = m;
+        setAttribute("muted", m ? "true" : "false");
+        if (audio != null) audio.setMuted(m);
+    }
+
+    // ── Media event dispatching ──
+
+    /** Whether the media loops. */
+    public boolean isLoop() {
+        return loop;
+    }
+
+    /** Set loop state. */
+    public void setLoop(boolean l) {
+        loop = l;
+        setAttribute("loop", l ? "true" : "false");
+    }
+
+    // ── Network options API (callable from JS) ──
+
+    /** Whether autoplay is enabled. */
+    public boolean isAutoplay() {
+        return autoplay;
+    }
+
+    private void fireMediaEvents() {
+        boolean playing = autoplay && !paused;
+        long now = System.currentTimeMillis();
+
+        // Track current time from displayed frame
+        if (playing && currentFrame != null) {
+            mediaCurrentTimeSecs = currentFrame.ptsMs() / 1000.0;
+        }
+
+        // Update duration when we get it from the player
+        if (mediaDurationSecs < 0 && player != null) {
+            long durMs = player.getDurationMs();
+            if (durMs > 0) {
+                mediaDurationSecs = durMs / 1000.0;
+                dispatchMediaEvent("durationchange");
+                readyState = Math.max(readyState, 1);
+                mediaHasFiredLoadedMetadata = true;
+                dispatchMediaEvent("loadedmetadata");
+            }
+        }
+
+        // Ready state transitions
+        if (!mediaHasFiredLoadedMetadata && resolvedSrc != null && !resolvedSrc.isEmpty() && player != null) {
+            if (currentFrame != null) {
+                readyState = Math.max(readyState, 2);
+                if (!mediaHasFiredCanPlay) {
+                    mediaHasFiredCanPlay = true;
+                    dispatchMediaEvent("canplay");
+                }
+            }
+        }
+
+        if (player != null && readyState < 1) {
+            readyState = 1;
+            networkState = 1; // NETWORK_IDLE
+            if (!mediaHasFiredLoadedMetadata) {
+                mediaHasFiredLoadedMetadata = true;
+                dispatchMediaEvent("loadedmetadata");
+            }
+        }
+
+        // Network state
+        if (!resolvedSrc.isEmpty()) {
+            if (networkState == 0) {
+                networkState = 1; // NETWORK_IDLE
+            }
+        }
+
+        // play / pause transition
+        if (paused != mediaPrevPaused) {
+            if (!paused && mediaEnded) {
+                mediaEnded = false;
+            }
+            dispatchMediaEvent(paused ? "pause" : "play");
+            mediaPrevPaused = paused;
+        }
+
+        // volumechange
+        if (muted != mediaPrevMuted || Math.abs(volume - mediaPrevVolume) > 0.0001) {
+            dispatchMediaEvent("volumechange");
+            mediaPrevMuted = muted;
+            mediaPrevVolume = volume;
+        }
+
+        // timeupdate: fire periodically during playback
+        if (playing && (now - mediaLastTimeUpdateMs) >= 250) {
+            dispatchMediaEvent("timeupdate");
+            mediaLastTimeUpdateMs = now;
+        }
+
+        // Detect ended: player exists but no frames arriving and not paused
+        if (playing && player != null && currentFrame == null && !mediaEnded) {
+            // Check if we've seen frames before (media actually started)
+            if (mediaLastTimeUpdateMs > 0 || mediaCurrentTimeSecs > 0.01) {
+                mediaEnded = true;
+                dispatchMediaEvent("ended");
+            }
         }
     }
 
-    public void closeMedia() {
-        closePlayer();
+    private void dispatchMediaEvent(String type) {
+        try {
+            com.sighs.apricityui.init.Event ev = new com.sighs.apricityui.init.Event(this, type, e -> {}, false);
+            com.sighs.apricityui.init.Event.triggerSingle(ev);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Set a custom User-Agent header for this media element's network streams. */
+    public void setUserAgent(String userAgent) {
+        networkOptions.put("user_agent", userAgent);
+    }
+
+    /** Set custom HTTP headers (FFmpeg format: "Key: value\r\nKey: value"). */
+    public void setHeaders(String headers) {
+        networkOptions.put("headers", headers);
     }
 
     private static int parseInt(String value, int fallback) {
@@ -479,5 +848,32 @@ public class Video extends Element {
 
     private static String normalizeAttr(String name) {
         return name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
+    }
+
+    /** Set an arbitrary FFmpeg network option (e.g. "referer", "cookies", "user_agent"). */
+    public void setNetworkOption(String key, String value) {
+        networkOptions.put(key, value);
+    }
+
+    /** Remove all custom network options for this element. */
+    public void clearNetworkOptions() {
+        networkOptions.clear();
+    }
+
+    /** Get a snapshot of current custom network options. */
+    public Map<String, String> getNetworkOptions() {
+        return new HashMap<>(networkOptions);
+    }
+
+    private String resolveHlsForVideo(String url) {
+        String policy = hlsPolicy;
+        if (policy == null || policy.isBlank() || "auto".equals(policy)) {
+            // Default: video prefers best quality.
+            return HlsMasterPlaylist.selectVariantOrSelf(url, HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH, networkTimeoutMs);
+        }
+        if ("off".equals(policy) || "disabled".equals(policy) || "none".equals(policy)) {
+            return url;
+        }
+        return HlsMasterPlaylist.selectVariantOrSelf(url, parsePolicy(policy, true), networkTimeoutMs);
     }
 }

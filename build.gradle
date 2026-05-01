@@ -1,7 +1,5 @@
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import java.util.Locale
-import java.util.UUID
 
 plugins {
     id 'eclipse'
@@ -107,7 +105,7 @@ dependencies {
     modImplementation ("curse.maven:rhino-416294:6186971")
     modImplementation ("curse.maven:architectury-api-419699:5137938")
 
-    modImplementation "com.sighs:ApricityUI-forge-1.20.1:1.0.4"
+    modImplementation "com.sighs:ApricityUI-forge-1.20.1:1.1.2"
 
     jarJar(compileOnly("org.bytedeco:javacpp:${javacppVersion}")) {
         version {
@@ -154,6 +152,9 @@ jar {
     manifest.attributes([
             "MixinConfigs": "${mod_id}.mixins.json"
     ])
+    // Exclude decoder classes — loaded via URLClassLoader at runtime
+    exclude "**/video/FFmpegVideoDecoder*.class"
+    exclude "**/audio/FFmpegAudioDecoder*.class"
 }
 
 tasks.named('processResources', ProcessResources).configure {
@@ -231,9 +232,24 @@ def filterJarJarMetadata = { File jarFile, Closure<Boolean> keepEntry, File outp
     }
 }
 
+def DECODER_JAR_NAME = "decoder.jar"
+
+def decoderJarArchive = layout.buildDirectory.file("tmp/decoder-jar/${DECODER_JAR_NAME}")
+
+tasks.register("decoderJar", Jar) {
+    dependsOn(compileJava)
+    includeEmptyDirs = false
+    from(sourceSets.main.output.asFileTree.matching {
+        include "**/FFmpegVideoDecoder*.class"
+        include "**/FFmpegAudioDecoder*.class"
+    })
+    archiveFileName = DECODER_JAR_NAME
+    destinationDirectory = layout.buildDirectory.dir("tmp/decoder-jar")
+}
+
 def registerVariantJarTask = { String taskName, String classifier, String distribution, Closure<Boolean> keepEntry ->
     tasks.register(taskName, Jar) {
-        dependsOn(reobfJarTask)
+        dependsOn(reobfJarTask, "decoderJar")
         archiveBaseName.set(base.archivesName.get())
         archiveVersion.set(project.version.toString())
         archiveClassifier.set(classifier)
@@ -249,15 +265,25 @@ def registerVariantJarTask = { String taskName, String classifier, String distri
                     details.exclude()
                     return
                 }
+                // Check keepEntry FIRST so platform/downloader filtering works
                 if (!keepEntry.call(path)) {
                     details.exclude()
                     return
                 }
+                // Move javacpp/ffmpeg JARs out of jarjar to avoid module system crash
                 if (path.startsWith("META-INF/jarjar/") && (path.contains("javacpp") || path.contains("ffmpeg"))) {
                     details.path = "META-INF/apricitymedia/runtime/" + path.substring("META-INF/jarjar/".length())
+                    return
                 }
             }
         }
+
+        // Include decoder.jar at runtime path (loaded by URLClassLoader at runtime)
+        from(decoderJarArchive) {
+            into("META-INF/apricitymedia/runtime")
+            rename { DECODER_JAR_NAME }
+        }
+
         def metadataOutput = layout.buildDirectory.file("tmp/jarjar/${taskName}/metadata.json")
         def distributionMarkerOutput = layout.buildDirectory.file("tmp/dist/${taskName}/dist.properties")
         inputs.file(baseObfJar)
@@ -269,6 +295,7 @@ def registerVariantJarTask = { String taskName, String classifier, String distri
             def metadataKeepEntry = { String path ->
                 if (!keepEntry.call(path)) return false
                 if (!path.startsWith("META-INF/jarjar/")) return true
+                // Exclude javacpp/ffmpeg from jarjar metadata (they're in runtime/)
                 return !(path.contains("javacpp") || path.contains("ffmpeg"))
             }
             filterJarJarMetadata.call(jarFile, metadataKeepEntry, metadataFile)

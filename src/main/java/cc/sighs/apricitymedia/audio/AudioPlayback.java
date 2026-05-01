@@ -12,9 +12,13 @@ import javax.sound.sampled.SourceDataLine;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
 public final class AudioPlayback implements AutoCloseable {
     private static final Logger LOGGER = LoggerFactory.getLogger(AudioPlayback.class);
@@ -24,16 +28,21 @@ public final class AudioPlayback implements AutoCloseable {
     private final int networkTimeoutMs;
     private final int networkBufferKb;
     private final boolean networkReconnect;
+    private final Map<String, String> networkOptions;
     private final ExecutorService executor;
+    private final ByteRingBuffer pcmBuffer;
+    private final CountDownLatch formatReady = new CountDownLatch(1);
 
     private volatile boolean closed = false;
     private volatile boolean paused = false;
     private volatile boolean muted = false;
     private volatile double volume = 1.0;
+    private volatile long mediaDurationMs = -1;
 
+    private volatile AudioFormat audioFormat;
     private SourceDataLine line;
 
-    private AudioPlayback(String source, Path cleanupFile, boolean loop, boolean muted, double volume, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect) {
+    private AudioPlayback(String source, Path cleanupFile, boolean loop, boolean muted, double volume, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect, Map<String, String> networkOptions) {
         this.source = source;
         this.cleanupFile = cleanupFile;
         this.loop = loop;
@@ -42,19 +51,27 @@ public final class AudioPlayback implements AutoCloseable {
         this.networkTimeoutMs = networkTimeoutMs;
         this.networkBufferKb = networkBufferKb;
         this.networkReconnect = networkReconnect;
-        this.executor = Executors.newSingleThreadExecutor(runnable -> {
-            Thread t = new Thread(runnable, "ApricityUI-AudioDecoder");
+        this.networkOptions = networkOptions != null ? networkOptions : Map.of();
+        int ringBytes = Math.max(256 * 1024, Math.max(64, networkBufferKb) * 1024);
+        this.pcmBuffer = new ByteRingBuffer(ringBytes);
+        this.executor = Executors.newFixedThreadPool(2, runnable -> {
+            Thread t = new Thread(runnable, "ApricityUI-AudioWorker");
             t.setDaemon(true);
             return t;
         });
-        this.executor.execute(this::runLoop);
+        this.executor.execute(this::decodeLoop);
+        this.executor.execute(this::playbackLoop);
     }
 
     public static AudioPlayback open(String resolvedPath, boolean loop, boolean muted, double volume) {
-        return open(resolvedPath, loop, muted, volume, 15000, 512, true);
+        return open(resolvedPath, loop, muted, volume, 15000, 512, true, Map.of());
     }
 
     public static AudioPlayback open(String resolvedPath, boolean loop, boolean muted, double volume, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect) {
+        return open(resolvedPath, loop, muted, volume, networkTimeoutMs, networkBufferKb, networkReconnect, Map.of());
+    }
+
+    public static AudioPlayback open(String resolvedPath, boolean loop, boolean muted, double volume, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect, Map<String, String> networkOptions) {
         if (!FFmpegRuntimeBootstrap.ensureReady()) {
             LOGGER.warn("AudioPlayback open aborted, runtime not ready, source={}, reason={}", resolvedPath, FFmpegRuntimeBootstrap.getInitErrorMessage());
             return null;
@@ -64,7 +81,7 @@ public final class AudioPlayback implements AutoCloseable {
             LOGGER.warn("AudioPlayback open failed to prepare source={}", resolvedPath);
             return null;
         }
-        return new AudioPlayback(handle.source, handle.cleanupFile, loop, muted, volume, networkTimeoutMs, networkBufferKb, networkReconnect);
+        return new AudioPlayback(handle.source, handle.cleanupFile, loop, muted, volume, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions);
     }
 
     public void setPaused(boolean paused) {
@@ -81,14 +98,29 @@ public final class AudioPlayback implements AutoCloseable {
         applyVolumeControls();
     }
 
+    private static boolean isRemotePath(String path) {
+        if (path == null) return false;
+        String v = path.trim().toLowerCase();
+        return v.contains("://")
+                || v.contains("rtsp:")
+                || v.contains("rtmp:")
+                || v.contains("mms:");
+    }
+
     public void setVolume(double volume) {
         this.volume = Math.max(0, Math.min(1, volume));
         applyVolumeControls();
     }
 
+    /** Estimated media duration in milliseconds, or -1 if unknown. */
+    public long getDurationMs() {
+        return mediaDurationMs;
+    }
+
     @Override
     public void close() {
         closed = true;
+        pcmBuffer.close();
         executor.shutdownNow();
         try {
             executor.awaitTermination(200, TimeUnit.MILLISECONDS);
@@ -104,14 +136,13 @@ public final class AudioPlayback implements AutoCloseable {
         }
     }
 
-    private void runLoop() {
-        try (FFmpegAudioDecoder decoder = new FFmpegAudioDecoder(source, networkTimeoutMs, networkBufferKb, networkReconnect)) {
-            AudioFormat format = new AudioFormat(decoder.outSampleRate(), 16, decoder.outChannels(), true, false);
-            SourceDataLine created = AudioSystem.getSourceDataLine(format);
-            created.open(format);
-            created.start();
-            line = created;
-            applyVolumeControls();
+    private void decodeLoop() {
+        byte[] decodeBuffer = new byte[32 * 1024];
+        try (IAudioDecoder decoder = FFmpegRuntimeBootstrap.createAudioDecoder(source, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions)) {
+            mediaDurationMs = decoder.getDurationMs();
+            audioFormat = new AudioFormat(
+                    decoder.outSampleRate(), 16, decoder.outChannels(), true, false);
+            formatReady.countDown();
 
             while (!closed) {
                 if (paused) {
@@ -119,26 +150,29 @@ public final class AudioPlayback implements AutoCloseable {
                     continue;
                 }
 
-                byte[] chunk = decoder.readNextPcmChunk();
-                if (chunk == null || chunk.length == 0) {
+                int read = decoder.readNextPcmChunk(decodeBuffer, 0, decodeBuffer.length);
+                if (read < 0) {
                     if (!loop) {
                         sleep(10);
                         continue;
                     }
                     decoder.rewind();
+                    pcmBuffer.clear();
+                    continue;
+                }
+                if (read == 0) {
+                    sleep(1);
                     continue;
                 }
 
-                if (!muted) {
-                    created.write(chunk, 0, chunk.length);
-                } else {
-                    sleep(Math.max(1, chunk.length / 192));
-                }
+                pcmBuffer.writeBlocking(decodeBuffer, 0, read);
             }
+        } catch (InterruptedException ignored) {
+            formatReady.countDown();
+            Thread.currentThread().interrupt();
         } catch (Exception e) {
-            LOGGER.error("Audio playback loop failed for source={}", source, e);
-        } finally {
-            closeLine();
+            formatReady.countDown();
+            LOGGER.error("Audio decode loop failed for source={}", source, e);
         }
     }
 
@@ -201,14 +235,44 @@ public final class AudioPlayback implements AutoCloseable {
         }
     }
 
-    private static boolean isRemotePath(String path) {
-        if (path == null) return false;
-        String v = path.trim().toLowerCase();
-        return v.startsWith("http://")
-                || v.startsWith("https://")
-                || v.startsWith("rtsp://")
-                || v.startsWith("rtmp://")
-                || v.startsWith("mms://");
+    private void playbackLoop() {
+        byte[] playBuffer = new byte[16 * 1024];
+        try {
+            formatReady.await();
+            if (closed) return;
+
+            AudioFormat format = audioFormat;
+            if (format == null) {
+                LOGGER.warn("Audio playback aborted, format not available, source={}", source);
+                return;
+            }
+
+            SourceDataLine created = AudioSystem.getSourceDataLine(format);
+            int frameSize = Math.max(1, format.getFrameSize());
+            int suggested = Math.max(frameSize * 256, playBuffer.length * 4); // keep line-buffer reasonably large
+            suggested -= (suggested % frameSize);
+            created.open(format, suggested);
+            created.start();
+            line = created;
+            applyVolumeControls();
+
+            while (!closed) {
+                if (paused) {
+                    sleep(5);
+                    continue;
+                }
+
+                int n = pcmBuffer.readBlocking(playBuffer, 0, playBuffer.length);
+                if (n <= 0) continue;
+                created.write(playBuffer, 0, n);
+            }
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            LOGGER.error("Audio playback loop failed for source={}", source, e);
+        } finally {
+            closeLine();
+        }
     }
 
     private static String sanitize(String value) {
@@ -217,5 +281,97 @@ public final class AudioPlayback implements AutoCloseable {
     }
 
     private record SourceHandle(String source, Path cleanupFile) {
+    }
+
+    private static final class ByteRingBuffer {
+        private final byte[] buffer;
+        private final ReentrantLock lock = new ReentrantLock();
+        private final Condition notEmpty = lock.newCondition();
+        private final Condition notFull = lock.newCondition();
+        private int readPos = 0;
+        private int writePos = 0;
+        private int size = 0;
+        private volatile boolean closed = false;
+
+        private ByteRingBuffer(int capacity) {
+            this.buffer = new byte[Math.max(8 * 1024, capacity)];
+        }
+
+        void clear() {
+            lock.lock();
+            try {
+                readPos = 0;
+                writePos = 0;
+                size = 0;
+                notFull.signalAll();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        void close() {
+            closed = true;
+            lock.lock();
+            try {
+                notEmpty.signalAll();
+                notFull.signalAll();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        void writeBlocking(byte[] src, int offset, int length) throws InterruptedException {
+            int remaining = length;
+            int off = offset;
+            while (remaining > 0) {
+                lock.lock();
+                try {
+                    while (!closed && size == buffer.length) {
+                        notFull.await();
+                    }
+                    if (closed) return;
+
+                    int writable = buffer.length - size;
+                    int chunk = Math.min(remaining, writable);
+                    int first = Math.min(chunk, buffer.length - writePos);
+                    System.arraycopy(src, off, buffer, writePos, first);
+                    int second = chunk - first;
+                    if (second > 0) {
+                        System.arraycopy(src, off + first, buffer, 0, second);
+                    }
+                    writePos = (writePos + chunk) % buffer.length;
+                    size += chunk;
+                    off += chunk;
+                    remaining -= chunk;
+                    notEmpty.signal();
+                } finally {
+                    lock.unlock();
+                }
+            }
+        }
+
+        int readBlocking(byte[] dst, int offset, int length) throws InterruptedException {
+            lock.lock();
+            try {
+                while (!closed && size == 0) {
+                    notEmpty.await();
+                }
+                if (size == 0) return 0;
+
+                int chunk = Math.min(length, size);
+                int first = Math.min(chunk, buffer.length - readPos);
+                System.arraycopy(buffer, readPos, dst, offset, first);
+                int second = chunk - first;
+                if (second > 0) {
+                    System.arraycopy(buffer, 0, dst, offset + first, second);
+                }
+                readPos = (readPos + chunk) % buffer.length;
+                size -= chunk;
+                notFull.signal();
+                return chunk;
+            } finally {
+                lock.unlock();
+            }
+        }
     }
 }

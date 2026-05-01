@@ -1,57 +1,41 @@
 <body>
-  <div id="overlay">
-    <div id="panel">
-      <div id="header">
-        <div id="titleGroup">
-          <div id="title">ApricityUI Media Demo</div>
-          <div id="subtitle">FFmpeg local + network streaming</div>
-        </div>
-        <div id="hint">K</div>
-      </div>
+<div id="panel">
+  <div id="header">
+    <div id="titleGroup">
+      <div id="title">ApricityUI Media Demo</div>
+      <div id="subtitle">FFmpeg local + network streaming</div>
+    </div>
+    <div id="hint">V</div>
+  </div>
 
-      <div id="preview">
-        <video id="demoVideo" src="demo.mp4" autoplay loop preload="none" paused="true" decode-width="1280" max-fps="0" drop-frames="true" muted></video>
-        <div id="previewOverlay">
-          <div id="overlayTitle">预览</div>
-          <div id="status">就绪</div>
-        </div>
-      </div>
-
-      <div id="actions">
-        <div id="btnVideo" class="btn primary">播放本地视频</div>
-        <div id="btnAudio" class="btn">播放本地音频</div>
-      </div>
-
-      <div id="actionsNetwork">
-        <div id="btnNetVideo" class="btn subtle">播放网络视频</div>
-        <div id="btnNetAudio" class="btn subtle">播放网络音频</div>
-      </div>
-
-      <audio id="demoAudio" src="demo.mp3" autoplay loop preload="none" paused="true" volume="1"></audio>
-      <audio id="demoNetAudio" src="" autoplay loop preload="metadata" paused="true" volume="1" network-timeout-ms="8000" network-buffer-kb="768" network-reconnect="true"></audio>
+  <div id="preview">
+    <video autoplay decode-width="1280" drop-frames="true" hls-policy="auto" id="demoVideo" loop max-fps="0" muted paused="true" preload="none" src="demo.mp4"></video>
+    <div id="previewOverlay">
+      <div id="overlayTitle">预览</div>
+      <div id="status">就绪</div>
+      <div id="timeDisplay" style="font-size:10px;color:rgba(234,240,255,0.5);margin-top:2px;"></div>
     </div>
   </div>
+
+  <div id="actions">
+    <div class="btn primary" id="btnVideo">播放本地视频</div>
+    <div class="btn" id="btnAudio">播放本地音频</div>
+  </div>
+
+  <div id="actionsNetwork">
+    <div class="btn subtle" id="btnNetVideo">播放网络视频</div>
+    <div class="btn subtle" id="btnNetAudio">播放网络音频</div>
+  </div>
+
+  <audio autoplay id="demoAudio" loop paused="true" preload="none" src="demo.mp3" volume="1"></audio>
+  <audio autoplay hls-policy="auto" id="demoNetAudio" loop network-buffer-kb="768" network-reconnect="true" network-timeout-ms="8000" paused="true" preload="metadata" src="" volume="1"></audio>
+</div>
 </body>
 
 <style>
   body {
-    width: 100%;
-    height: 100%;
     margin: 0;
-  }
-
-  #overlay {
-    position: fixed;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    padding: 18px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    pointer-events: auto;
+    padding: 0;
   }
 
   #panel {
@@ -65,7 +49,6 @@
     border-radius: 16px;
     background-color: rgba(12, 14, 18, 0.74);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(12px);
     box-shadow: 0px 14px 38px rgba(0, 0, 0, 0.45);
   }
 
@@ -218,3 +201,239 @@
     display: none;
   }
 </style>
+
+<script>
+  const BILIBILI_ROOM_ID = "22603245";
+  const NET_AUDIO_SRC = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+
+  const video = document.querySelector("#demoVideo");
+  const localAudio = document.querySelector("#demoAudio");
+  const netAudio = document.querySelector("#demoNetAudio");
+
+  const btnVideo = document.querySelector("#btnVideo");
+  const btnAudio = document.querySelector("#btnAudio");
+  const btnNetVideo = document.querySelector("#btnNetVideo");
+  const btnNetAudio = document.querySelector("#btnNetAudio");
+  const status = document.querySelector("#status");
+  const timeDisplay = document.querySelector("#timeDisplay");
+
+  const MODE_LOCAL_VIDEO = "localVideo";
+  const MODE_LOCAL_AUDIO = "localAudio";
+  const MODE_NET_VIDEO = "netVideo";
+  const MODE_NET_AUDIO = "netAudio";
+  let activeMode = "";
+  let activePaused = true;
+
+  // ── Pre-configure headers for Bilibili live streams ──
+  // The stream URL is fetched dynamically via ApricityMediaHls.getBilibiliPlayUrl(),
+  // but these headers are applied to the video element for FFmpeg to use.
+  video.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36");
+
+  video.setHeaders(
+          "accept: */*\r\n" +
+          "accept-encoding: gzip, deflate, br\r\n" +
+          "accept-language: zh-CN,zh;q=0.9,en;q=0.8\r\n" +
+          "origin: https://live.bilibili.com\r\n" +
+          "referer: https://live.bilibili.com/\r\n" +
+          "sec-ch-ua: \"Microsoft Edge\";v=\"147\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"147\"\r\n" +
+          "sec-ch-ua-mobile: ?0\r\n" +
+          "sec-ch-ua-platform: \"Windows\"\r\n" +
+          "sec-fetch-dest: empty\r\n" +
+          "sec-fetch-mode: cors\r\n" +
+          "sec-fetch-site: cross-site"
+  );
+  video.setNetworkOption("reconnect", "1");
+  video.setNetworkOption("reconnect_streamed", "1");
+  video.setNetworkOption("reconnect_delay_max", "2");
+
+  // ── Media event listeners ──
+
+  function fmtTime(sec) {
+    if (sec < 0) return "--:--";
+    var m = Math.floor(sec / 60);
+    var s = Math.floor(sec % 60);
+    return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  video.addEventListener("play", function() {
+    console.log("[ApricityMediaDemo] event: play");
+  });
+
+  video.addEventListener("pause", function() {
+    console.log("[ApricityMediaDemo] event: pause");
+  });
+
+  video.addEventListener("ended", function() {
+    console.log("[ApricityMediaDemo] event: ended");
+    if (activeMode === MODE_LOCAL_VIDEO || activeMode === MODE_NET_VIDEO) {
+      activePaused = true;
+      updateStatus(modeText(activeMode, true), activeMode);
+    }
+  });
+
+  video.addEventListener("timeupdate", function() {
+    var cur = video.getCurrentTime();
+    var dur = video.getDuration();
+    timeDisplay.innerText = fmtTime(cur) + " / " + fmtTime(dur);
+  });
+
+  video.addEventListener("loadedmetadata", function() {
+    console.log("[ApricityMediaDemo] event: loadedmetadata, duration=" + video.getDuration());
+  });
+
+  video.addEventListener("canplay", function() {
+    console.log("[ApricityMediaDemo] event: canplay");
+  });
+
+  video.addEventListener("durationchange", function() {
+    console.log("[ApricityMediaDemo] event: durationchange, duration=" + video.getDuration());
+  });
+
+  video.addEventListener("volumechange", function() {
+    console.log("[ApricityMediaDemo] event: volumechange, volume=" + video.getVolume() + ", muted=" + video.isMuted());
+  });
+
+  video.addEventListener("error", function() {
+    console.log("[ApricityMediaDemo] event: error");
+    status.innerText = "播放出错";
+  });
+
+  // Also wire audio events for the local audio element
+  localAudio.addEventListener("play", function() {
+    console.log("[ApricityMediaDemo] audio event: play");
+  });
+
+  localAudio.addEventListener("pause", function() {
+    console.log("[ApricityMediaDemo] audio event: pause");
+  });
+
+  localAudio.addEventListener("ended", function() {
+    console.log("[ApricityMediaDemo] audio event: ended");
+    if (activeMode === MODE_LOCAL_AUDIO) {
+      activePaused = true;
+      updateStatus(modeText(activeMode, true), activeMode);
+    }
+  });
+
+  // ── Helper functions ──
+
+  function stopAll() {
+    video.pause();
+    localAudio.pause();
+    netAudio.pause();
+  }
+
+  function updateStatus(text, active) {
+    status.innerText = text;
+    btnVideo.setAttribute("class", active === "localVideo" ? "btn primary" : "btn");
+    btnAudio.setAttribute("class", active === "localAudio" ? "btn primary" : "btn");
+    btnNetVideo.setAttribute("class", active === "netVideo" ? "btn primary subtle" : "btn subtle");
+    btnNetAudio.setAttribute("class", active === "netAudio" ? "btn primary subtle" : "btn subtle");
+  }
+
+  function applyNetworkAttrs(el) {
+    if (!el) return;
+    el.setAttribute("network-timeout-ms", "8000");
+    el.setAttribute("network-buffer-kb", "2048");
+    el.setAttribute("network-reconnect", "true");
+    el.setAttribute("preload", "metadata");
+    el.setAttribute("max-fps", "0");
+    el.setAttribute("decode-width", "0");
+    el.setAttribute("drop-frames", "true");
+  }
+
+  function modeText(mode, paused) {
+    if (mode === MODE_LOCAL_VIDEO) return paused ? "本地视频已暂停" : "本地视频播放中";
+    if (mode === MODE_LOCAL_AUDIO) return paused ? "本地音频已暂停" : "本地音频播放中";
+    if (mode === MODE_NET_VIDEO) return paused ? "网络视频已暂停" : "网络视频播放中";
+    if (mode === MODE_NET_AUDIO) return paused ? "网络音频已暂停" : "网络音频播放中";
+    return "就绪";
+  }
+
+  function startMode(mode) {
+    console.log("[ApricityMediaDemo] startMode", mode);
+    stopAll();
+    timeDisplay.innerText = "--:-- / --:--";
+
+    if (mode === MODE_LOCAL_VIDEO) {
+      video.setAttribute("src", "demo.mp4");
+      video.setMuted(false);
+      video.setLoop(true);
+      video.play();
+    } else if (mode === MODE_LOCAL_AUDIO) {
+      localAudio.setAttribute("src", "demo.mp3");
+      localAudio.setLoop(true);
+      localAudio.play();
+    } else if (mode === MODE_NET_VIDEO) {
+      status.innerText = "正在获取直播流...";
+      var streamUrl = ApricityMediaHls.getBilibiliPlayUrl(BILIBILI_ROOM_ID);
+      if (streamUrl) {
+        console.log("[ApricityMediaDemo] bilibili stream resolved: " + streamUrl);
+        video.setAttribute("src", streamUrl);
+        applyNetworkAttrs(video);
+        video.setMuted(false);
+        video.setLoop(false);
+        video.play();
+      } else {
+        console.log("[ApricityMediaDemo] bilibili stream resolve FAILED for room " + BILIBILI_ROOM_ID);
+        status.innerText = "获取直播流失败";
+        activeMode = "";
+        return;
+      }
+    } else if (mode === MODE_NET_AUDIO) {
+      netAudio.setAttribute("src", NET_AUDIO_SRC);
+      applyNetworkAttrs(netAudio);
+      netAudio.setLoop(false);
+      netAudio.play();
+    }
+
+    activeMode = mode;
+    activePaused = false;
+    updateStatus(modeText(mode, false), mode);
+  }
+
+  function toggleMode(mode) {
+    console.log("[ApricityMediaDemo] toggleMode before", mode, "activeMode=", activeMode, "activePaused=", activePaused);
+    if (activeMode === mode) {
+      activePaused = !activePaused;
+
+      if (mode === MODE_LOCAL_VIDEO || mode === MODE_NET_VIDEO) {
+        if (activePaused) video.pause(); else video.play();
+      } else if (mode === MODE_LOCAL_AUDIO) {
+        if (activePaused) localAudio.pause(); else localAudio.play();
+      } else if (mode === MODE_NET_AUDIO) {
+        if (activePaused) netAudio.pause(); else netAudio.play();
+      }
+
+      updateStatus(modeText(mode, activePaused), mode);
+      console.log("[ApricityMediaDemo] toggleMode pause", mode, "paused=", activePaused);
+      return;
+    }
+    startMode(mode);
+  }
+
+  console.log("[ApricityMediaDemo] script loaded");
+
+  btnVideo.addEventListener("mousedown", function() {
+    console.log("[ApricityMediaDemo] click local video");
+    toggleMode(MODE_LOCAL_VIDEO);
+  });
+
+  btnAudio.addEventListener("mousedown", function() {
+    console.log("[ApricityMediaDemo] click local audio");
+    toggleMode(MODE_LOCAL_AUDIO);
+  });
+
+  btnNetVideo.addEventListener("mousedown", function() {
+    console.log("[ApricityMediaDemo] click net video");
+    toggleMode(MODE_NET_VIDEO);
+  });
+
+  btnNetAudio.addEventListener("mousedown", function() {
+    console.log("[ApricityMediaDemo] click net audio");
+    toggleMode(MODE_NET_AUDIO);
+  });
+
+  stopAll();
+  updateStatus("就绪", "");
+</script>

@@ -1,6 +1,8 @@
 package cc.sighs.apricitymedia;
 
+import cc.sighs.apricitymedia.audio.IAudioDecoder;
 import cc.sighs.apricitymedia.hack.FixedModularURLHandler;
+import cc.sighs.apricitymedia.video.IVideoDecoder;
 import net.minecraftforge.fml.loading.FMLLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,9 +24,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Duration;
-import java.util.Hashtable;
-import java.util.Locale;
-import java.util.Properties;
+import java.util.*;
 
 
 public final class FFmpegRuntimeBootstrap {
@@ -36,6 +36,7 @@ public final class FFmpegRuntimeBootstrap {
     private static final String DIST_MARKER_SALT = "AUIVideo-Dist-v1";
     private static final String RUNTIME_CONFIG_FILE = "apricitymedia-runtime.properties";
     private static final String BUNDLED_RUNTIME_DIR = "META-INF/apricitymedia/runtime/";
+    private static final String DECODER_JAR_NAME = "decoder.jar";
 
     private static final int DOWNLOAD_RETRY_COUNT = 3;
     private static final int PREWARM_MAX_ATTEMPTS = 6;
@@ -49,7 +50,10 @@ public final class FFmpegRuntimeBootstrap {
     private static Path runtimeFfmpegBaseJar;
     private static Path runtimeJavacppPlatformJar;
     private static Path runtimeFfmpegPlatformJar;
-    private static ClassLoader runtimeDownloaderClassLoader;
+    private static Path runtimeDecoderJar;
+    private static ClassLoader runtimeLoader;
+    private static Class<?> videoDecoderClass;
+    private static Class<?> audioDecoderClass;
 
     private record RuntimeConfig(boolean startupBlocking) {
     }
@@ -167,6 +171,19 @@ public final class FFmpegRuntimeBootstrap {
         }
         LOGGER.info("FFmpeg runtime init externalRuntimeLoader={}", externalRuntime);
         loadNatives(externalRuntime);
+        // Cache decoder classes for factory methods
+        if (runtimeLoader != null) {
+            videoDecoderClass = runtimeLoader.loadClass("cc.sighs.apricitymedia.video.FFmpegVideoDecoder");
+            audioDecoderClass = runtimeLoader.loadClass("cc.sighs.apricitymedia.audio.FFmpegAudioDecoder");
+        } else if (!initialized) {
+            // Dev mode: decoders are in ModuleClassLoader, try direct reference
+            try {
+                videoDecoderClass = Class.forName("cc.sighs.apricitymedia.video.FFmpegVideoDecoder", false, FFmpegRuntimeBootstrap.class.getClassLoader());
+                audioDecoderClass = Class.forName("cc.sighs.apricitymedia.audio.FFmpegAudioDecoder", false, FFmpegRuntimeBootstrap.class.getClassLoader());
+            } catch (ClassNotFoundException ignored) {
+                // Not available — will be handled by createVideoDecoder returning null
+            }
+        }
         initialized = true;
         initError = null;
         initErrorMessage = "";
@@ -198,8 +215,19 @@ public final class FFmpegRuntimeBootstrap {
         runtimeFfmpegBaseJar = ffmpegBaseJar;
         runtimeJavacppPlatformJar = javacppJar;
         runtimeFfmpegPlatformJar = ffmpegJar;
-        runtimeDownloaderClassLoader = null;
+        runtimeDecoderJar = extractBundledResource(DECODER_JAR_NAME, runtimeDir);
         LOGGER.info("FFmpeg runtime prepared downloader jars at {}", runtimeDir);
+    }
+
+    private static Path extractBundledResource(String fileName, Path targetDir) throws Exception {
+        Path target = targetDir.resolve(fileName);
+        if (Files.isRegularFile(target) && Files.size(target) > 0) return target;
+        Files.createDirectories(targetDir);
+        try (InputStream in = FFmpegRuntimeBootstrap.class.getClassLoader().getResourceAsStream(BUNDLED_RUNTIME_DIR + fileName)) {
+            if (in == null) return null;
+            Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+            return target;
+        }
     }
 
     private static boolean prepareBundledRuntime() throws Exception {
@@ -226,7 +254,7 @@ public final class FFmpegRuntimeBootstrap {
         runtimeFfmpegBaseJar = ffmpegBaseJar;
         runtimeJavacppPlatformJar = javacppPlatformJar;
         runtimeFfmpegPlatformJar = ffmpegPlatformJar;
-        runtimeDownloaderClassLoader = null;
+        runtimeDecoderJar = extractBundledResource(DECODER_JAR_NAME, runtimeDir);
         LOGGER.info("FFmpeg runtime prepared bundled jars at {}", runtimeDir);
         return true;
     }
@@ -243,7 +271,7 @@ public final class FFmpegRuntimeBootstrap {
         setStaticField(factoryField, FixedModularURLHandler.INSTANCE);
         Hashtable<String, URLStreamHandler> handlersTable = getStaticField(handlersField);
         handlersTable.clear();
-        ClassLoader runtimeLoader = useExternalRuntimeLoader ? getOrCreateDownloaderClassLoader() : FFmpegRuntimeBootstrap.class.getClassLoader();
+        runtimeLoader = useExternalRuntimeLoader ? getOrCreateRuntimeClassLoader() : FFmpegRuntimeBootstrap.class.getClassLoader();
         Class<?> loaderClass = Class.forName("org.bytedeco.javacpp.Loader", true, runtimeLoader);
         Method loadMethod = loaderClass.getMethod("load", Class.class);
         loadMethod.invoke(null, Class.forName("org.bytedeco.ffmpeg.global.avutil", true, runtimeLoader));
@@ -295,27 +323,30 @@ public final class FFmpegRuntimeBootstrap {
         }
     }
 
-    private static ClassLoader getOrCreateDownloaderClassLoader() throws Exception {
-        ClassLoader cached = runtimeDownloaderClassLoader;
-        if (cached != null) return cached;
+    private static ClassLoader getOrCreateRuntimeClassLoader() throws Exception {
+        ClassLoader cached = runtimeLoader;
+        if (cached != null && !(cached instanceof URLClassLoader)) return cached;
         Path javacppBaseJar = runtimeJavacppBaseJar;
         Path ffmpegBaseJar = runtimeFfmpegBaseJar;
         Path javacppPlatformJar = runtimeJavacppPlatformJar;
         Path ffmpegPlatformJar = runtimeFfmpegPlatformJar;
+        Path decoderJar = runtimeDecoderJar;
         if (javacppBaseJar == null || ffmpegBaseJar == null || javacppPlatformJar == null || ffmpegPlatformJar == null) {
-            throw new IllegalStateException("Runtime jars not prepared for downloader distribution");
+            throw new IllegalStateException("Runtime jars not prepared");
         }
-        URL[] urls = new URL[]{
-                javacppBaseJar.toAbsolutePath().normalize().toUri().toURL(),
-                ffmpegBaseJar.toAbsolutePath().normalize().toUri().toURL(),
-                javacppPlatformJar.toAbsolutePath().normalize().toUri().toURL(),
-                ffmpegPlatformJar.toAbsolutePath().normalize().toUri().toURL()
-        };
+        List<URL> urlList = new ArrayList<>();
+        urlList.add(javacppBaseJar.toAbsolutePath().normalize().toUri().toURL());
+        urlList.add(ffmpegBaseJar.toAbsolutePath().normalize().toUri().toURL());
+        urlList.add(javacppPlatformJar.toAbsolutePath().normalize().toUri().toURL());
+        urlList.add(ffmpegPlatformJar.toAbsolutePath().normalize().toUri().toURL());
+        if (decoderJar != null) {
+            urlList.add(decoderJar.toAbsolutePath().normalize().toUri().toURL());
+        }
         synchronized (FFmpegRuntimeBootstrap.class) {
-            if (runtimeDownloaderClassLoader == null) {
-                runtimeDownloaderClassLoader = new URLClassLoader(urls, ClassLoader.getPlatformClassLoader());
+            if (!(runtimeLoader instanceof URLClassLoader)) {
+                runtimeLoader = new URLClassLoader(urlList.toArray(new URL[0]), FFmpegRuntimeBootstrap.class.getClassLoader());
             }
-            return runtimeDownloaderClassLoader;
+            return runtimeLoader;
         }
     }
 
@@ -472,6 +503,38 @@ public final class FFmpegRuntimeBootstrap {
             Thread.sleep(ms);
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    public static IVideoDecoder createVideoDecoder(String filePath, int targetWidth, int targetHeight, double maxFps, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect, Map<String, String> networkOptions) {
+        if (!ensureReady()) return null;
+        Class<?> clazz = videoDecoderClass;
+        if (clazz == null) {
+            LOGGER.error("Video decoder class not available");
+            return null;
+        }
+        try {
+            return (IVideoDecoder) clazz.getConstructor(String.class, int.class, int.class, double.class, int.class, int.class, boolean.class, Map.class)
+                    .newInstance(filePath, targetWidth, targetHeight, maxFps, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions);
+        } catch (Exception e) {
+            LOGGER.error("Failed to create video decoder", e);
+            return null;
+        }
+    }
+
+    public static IAudioDecoder createAudioDecoder(String filePath, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect, Map<String, String> networkOptions) {
+        if (!ensureReady()) return null;
+        Class<?> clazz = audioDecoderClass;
+        if (clazz == null) {
+            LOGGER.error("Audio decoder class not available");
+            return null;
+        }
+        try {
+            return (IAudioDecoder) clazz.getConstructor(String.class, int.class, int.class, boolean.class, Map.class)
+                    .newInstance(filePath, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions);
+        } catch (Exception e) {
+            LOGGER.error("Failed to create audio decoder", e);
+            return null;
         }
     }
 }
