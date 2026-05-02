@@ -41,10 +41,10 @@ public final class ApricityMediaClient {
     private static final float WORLD_WINDOW_WIDTH = 382f;
     private static final float WORLD_WINDOW_HEIGHT = 400f;
     private static final int WORLD_WINDOW_MAX_DISTANCE = 12;
-    // World window for in-world video demo
     private static WorldWindow worldWindow = null;
 
-    private ApricityMediaClient() {}
+    private ApricityMediaClient() {
+    }
 
     @Mod.EventBusSubscriber(modid = ApricityMedia.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
     public static class ModBusEvents {
@@ -62,7 +62,6 @@ public final class ApricityMediaClient {
 
         Minecraft mc = Minecraft.getInstance();
 
-        // Clean up world window if player left the world
         if (worldWindow != null && (mc.player == null || mc.level == null)) {
             WorldWindow.removeWindow(worldWindow);
             worldWindow = null;
@@ -112,14 +111,12 @@ public final class ApricityMediaClient {
                 WORLD_WINDOW_HEIGHT,
                 WORLD_WINDOW_MAX_DISTANCE
         );
-        // Face the player on placement, then stays static
         Vec3 toCamera = mc.player.getEyePosition().subtract(pos);
         double horiz = Math.sqrt(toCamera.x * toCamera.x + toCamera.z * toCamera.z);
         float yaw = (float) (Math.toDegrees(Math.atan2(toCamera.z, toCamera.x)) - 90.0);
         float pitch = (float) (Math.toDegrees(Math.atan2(toCamera.y, horiz)));
         worldWindow.setRotation(yaw + 180.0f, -pitch);
 
-        // Set explicit body dimensions so in-world layout is correct (no viewport in world mode)
         if (worldWindow.document != null && worldWindow.document.body != null) {
             worldWindow.document.body.setAttribute("style",
                     "width:" + WORLD_WINDOW_WIDTH + "px;height:" + WORLD_WINDOW_HEIGHT + "px;overflow:visible;margin:0;padding:0;");

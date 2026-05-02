@@ -53,9 +53,15 @@ public final class FFmpegAudioDecoder implements IAudioDecoder {
         AVDictionary options = null;
         if (isRemotePath(filePath)) {
             options = new AVDictionary();
-            avutil.av_dict_set(options, "rw_timeout", String.valueOf(Math.max(1000L, networkTimeoutMs) * 1000L), 0);
-            avutil.av_dict_set(options, "timeout", String.valueOf(Math.max(1000L, networkTimeoutMs) * 1000L), 0);
-            avutil.av_dict_set(options, "buffer_size", String.valueOf(Math.max(64L, networkBufferKb) * 1024L), 0);
+
+            long timeoutValue = Math.max(1000L, networkTimeoutMs) * 1000L;
+            String timeoutStr = String.valueOf(timeoutValue);
+            long bufferSizeValue = Math.max(64L, networkBufferKb) * 1024L;
+            String bufferSizeStr = String.valueOf(bufferSizeValue);
+
+            avutil.av_dict_set(options, "rw_timeout", timeoutStr, 0);
+            avutil.av_dict_set(options, "timeout", timeoutStr, 0);
+            avutil.av_dict_set(options, "buffer_size", bufferSizeStr, 0);
             avutil.av_dict_set(options, "reconnect", networkReconnect ? "1" : "0", 0);
             avutil.av_dict_set(options, "reconnect_streamed", networkReconnect ? "1" : "0", 0);
             avutil.av_dict_set(options, "reconnect_on_network_error", networkReconnect ? "1" : "0", 0);

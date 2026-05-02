@@ -112,7 +112,9 @@ public final class AudioPlayback implements AutoCloseable {
         applyVolumeControls();
     }
 
-    /** Estimated media duration in milliseconds, or -1 if unknown. */
+    /**
+     * Estimated media duration in milliseconds, or -1 if unknown.
+     */
     public long getDurationMs() {
         return mediaDurationMs;
     }

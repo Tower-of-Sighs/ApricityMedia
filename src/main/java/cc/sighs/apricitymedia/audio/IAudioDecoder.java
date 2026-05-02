@@ -18,10 +18,14 @@ public interface IAudioDecoder extends AutoCloseable {
     }
 
     void rewind();
+
     int outSampleRate();
+
     int outChannels();
 
-    /** Estimated media duration in milliseconds, or -1 if unknown. */
+    /**
+     * Estimated media duration in milliseconds, or -1 if unknown.
+     */
     default long getDurationMs() {
         return -1;
     }

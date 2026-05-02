@@ -89,7 +89,9 @@ public final class VideoPlayer implements AutoCloseable {
                 || v.contains("mms:");
     }
 
-    /** Estimated media duration in milliseconds, or -1 if unknown. */
+    /**
+     * Estimated media duration in milliseconds, or -1 if unknown.
+     */
     public long getDurationMs() {
         return mediaDurationMs;
     }
@@ -117,7 +119,7 @@ public final class VideoPlayer implements AutoCloseable {
 
     private void decodeLoop() {
         try (IVideoDecoder decoder = FFmpegRuntimeBootstrap.createVideoDecoder(source, targetWidth, targetHeight, maxFps, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions)) {
-                mediaDurationMs = decoder.getDurationMs();
+            mediaDurationMs = decoder.getDurationMs();
             while (!closed) {
                 VideoFrame frame = decoder.readNextFrame();
                 if (frame == null) {

@@ -21,9 +21,9 @@ public class FixedModularURLHandler implements URLStreamHandlerFactory {
 
     public static void init() {
         INSTANCE.handlers = ServiceLoader.load(ModuleClassLoader.class.getModule().getLayer(), ModularURLHandler.IURLProvider.class).stream()
-                                         .map(ServiceLoader.Provider::get)
-                                         .collect(Collectors.toMap(ModularURLHandler.IURLProvider::protocol, Function.identity()));
-        INSTANCE.handlers.put("union",new FixedUnionURLStreamHandler());
+                .map(ServiceLoader.Provider::get)
+                .collect(Collectors.toMap(ModularURLHandler.IURLProvider::protocol, Function.identity()));
+        INSTANCE.handlers.put("union", new FixedUnionURLStreamHandler());
     }
 
     @Override

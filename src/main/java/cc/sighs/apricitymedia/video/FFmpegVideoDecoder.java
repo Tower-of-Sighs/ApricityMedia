@@ -1,5 +1,6 @@
 package cc.sighs.apricitymedia.video;
 
+import cc.sighs.apricitymedia.ApricityMedia;
 import org.bytedeco.ffmpeg.avcodec.AVCodec;
 import org.bytedeco.ffmpeg.avcodec.AVCodecContext;
 import org.bytedeco.ffmpeg.avcodec.AVCodecParameters;
@@ -437,6 +438,7 @@ public final class FFmpegVideoDecoder implements IVideoDecoder {
     }
 
     private void maybeLogStats(boolean force) {
+        if (!ApricityMedia.isDev()) return;
         long now = System.currentTimeMillis();
         if (!force && (now - lastStatsLoggedAtMs) < STATS_LOG_INTERVAL_MS) return;
         lastStatsLoggedAtMs = now;
@@ -458,6 +460,7 @@ public final class FFmpegVideoDecoder implements IVideoDecoder {
     }
 
     private void logFirstFrame(AVFrame frame) {
+        if (!ApricityMedia.isDev()) return;
         try {
             byte pictType = avutil.av_get_picture_type_char(frame.pict_type());
             String pixFmt = pixFmtName(frame.format());
@@ -478,6 +481,7 @@ public final class FFmpegVideoDecoder implements IVideoDecoder {
     }
 
     private void logOpenInfo(AVStream selectedStream, double maxFps, int targetWidth, int targetHeight, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect, Map<String, String> networkOptions) {
+        if (!ApricityMedia.isDev()) return;
         try {
             LOGGER.info("FFmpeg video open: src={} remote={} streams={} programs={} selected_stream={} time_base={}/{} avg_fps={}/{} r_fps={}/{} target={}x{} out={}x{} max_fps={} timeout_ms={} buffer_kb={} reconnect={}",
                     source,
@@ -527,6 +531,7 @@ public final class FFmpegVideoDecoder implements IVideoDecoder {
     }
 
     private void logPrograms() {
+        if (!ApricityMedia.isDev()) return;
         try {
             int nbPrograms = formatContext.nb_programs();
             for (int i = 0; i < nbPrograms; i++) {
@@ -555,6 +560,7 @@ public final class FFmpegVideoDecoder implements IVideoDecoder {
     }
 
     private void logStreams() {
+        if (!ApricityMedia.isDev()) return;
         int total = formatContext.nb_streams();
         for (int i = 0; i < total; i++) {
             try {
@@ -646,26 +652,26 @@ public final class FFmpegVideoDecoder implements IVideoDecoder {
     private record FrameSlot(AVFrame frame, BytePointer buffer, ByteBuffer pixels, int bufferSize) {
 
         static FrameSlot allocate(int width, int height, int bufferSize) {
-                AVFrame frame = avutil.av_frame_alloc();
-                BytePointer buffer = new BytePointer(avutil.av_malloc(bufferSize)).capacity(bufferSize);
-                if (avutil.av_image_fill_arrays(frame.data(), frame.linesize(), buffer, avutil.AV_PIX_FMT_RGBA, width, height, 1) < 0) {
-                    throw new IllegalStateException("av_image_fill_arrays failed");
-                }
-                ByteBuffer pixels = buffer.position(0).capacity(bufferSize).asBuffer();
-                return new FrameSlot(frame, buffer, pixels, bufferSize);
+            AVFrame frame = avutil.av_frame_alloc();
+            BytePointer buffer = new BytePointer(avutil.av_malloc(bufferSize)).capacity(bufferSize);
+            if (avutil.av_image_fill_arrays(frame.data(), frame.linesize(), buffer, avutil.AV_PIX_FMT_RGBA, width, height, 1) < 0) {
+                throw new IllegalStateException("av_image_fill_arrays failed");
             }
+            ByteBuffer pixels = buffer.position(0).capacity(bufferSize).asBuffer();
+            return new FrameSlot(frame, buffer, pixels, bufferSize);
+        }
 
-            void free() {
-                try {
-                    avutil.av_frame_free(frame);
-                } catch (Exception ignored) {
-                }
-                try {
-                    avutil.av_free(buffer);
-                } catch (Exception ignored) {
-                }
+        void free() {
+            try {
+                avutil.av_frame_free(frame);
+            } catch (Exception ignored) {
+            }
+            try {
+                avutil.av_free(buffer);
+            } catch (Exception ignored) {
             }
         }
+    }
 
     private static void ensureLogLevel() {
         if (LOG_LEVEL_INITIALIZED.compareAndSet(false, true)) {

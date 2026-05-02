@@ -2,6 +2,7 @@ package cc.sighs.apricitymedia.element;
 
 import cc.sighs.apricitymedia.audio.AudioPlayback;
 import cc.sighs.apricitymedia.hls.HlsMasterPlaylist;
+import cc.sighs.apricitymedia.util.MediaUtil;
 import cc.sighs.apricitymedia.video.VideoFrame;
 import cc.sighs.apricitymedia.video.VideoPlayer;
 import com.mojang.blaze3d.platform.NativeImage;
@@ -24,7 +25,10 @@ import org.lwjgl.system.MemoryUtil;
 
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
 @ElementRegister(Video.TAG_NAME)
 public class Video extends Element {
@@ -139,11 +143,6 @@ public class Video extends Element {
         }
     }
 
-    /** Select the highest-bandwidth variant from an HLS master playlist. */
-    public static String hlsHighest(String masterUrl) {
-        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH, 8000);
-    }
-
     @Override
     public void remove() {
         closePlayer();
@@ -197,51 +196,13 @@ public class Video extends Element {
         ImageDrawer.draw(poseStack, textureLocation, x, y, width, height, blur);
     }
 
-    /** Select the highest-bandwidth variant with a custom timeout. */
-    public static String hlsHighest(String masterUrl, int timeoutMs) {
-        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH, timeoutMs);
-    }
-
-    /** Select the lowest-bandwidth variant from an HLS master playlist. */
-    public static String hlsLowest(String masterUrl) {
-        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH, 8000);
-    }
-
     private void restartPlayer() {
         closePlayer();
         ensurePlayer();
     }
 
-    /** Select the lowest-bandwidth variant with a custom timeout. */
-    public static String hlsLowest(String masterUrl, int timeoutMs) {
-        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH, timeoutMs);
-    }
-
-    /** Select an HLS variant by policy name: "highest", "lowest", "highest-resolution", "lowest-resolution". */
-    public static String hlsSelect(String masterUrl, String policyName) {
-        return hlsSelect(masterUrl, policyName, 8000);
-    }
-
-    /** Select an HLS variant by policy name with a custom timeout. */
-    public static String hlsSelect(String masterUrl, String policyName, int timeoutMs) {
-        HlsMasterPlaylist.Policy policy = parseHlsPolicy(policyName);
-        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, policy, timeoutMs);
-    }
-
-    private static HlsMasterPlaylist.Policy parseHlsPolicy(String policyName) {
-        if (policyName == null || policyName.isBlank()) return HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH;
-        String v = policyName.trim().toLowerCase(Locale.ROOT);
-        return switch (v) {
-            case "lowest", "low", "lowest_bandwidth", "lowest-bandwidth" -> HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH;
-            case "highest_resolution", "highest-resolution", "hires", "resolution" -> HlsMasterPlaylist.Policy.HIGHEST_RESOLUTION;
-            case "lowest_resolution", "lowest-resolution", "lores" -> HlsMasterPlaylist.Policy.LOWEST_RESOLUTION;
-            default -> HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH;
-        };
-    }
-
     private static String normalizeHlsPolicy(String value) {
-        if (value == null || value.isBlank()) return "auto";
-        return value.trim().toLowerCase(Locale.ROOT);
+        return MediaUtil.normalizeHlsPolicy(value);
     }
 
     private void ensureTexture(int w, int h) {
@@ -274,24 +235,16 @@ public class Video extends Element {
         }
     }
 
-    private boolean isTruthyAttr(String name) {
-        String value = getAttribute(name);
-        if (value == null) return false;
-        if (value.isBlank()) return hasAttribute(name);
-        String normalized = value.trim().toLowerCase(Locale.ROOT);
-        return "true".equals(normalized) || "1".equals(normalized) || "yes".equals(normalized) || name.equals(normalized);
+    private static boolean isRemoteUrl(String url) {
+        return MediaUtil.isRemoteUrl(url);
     }
 
-    private boolean shouldPreload() {
-        if (autoplay && !paused) return true;
-        return !preload.equals("none");
+    private static HlsMasterPlaylist.Policy parsePolicy(String policy, boolean isVideo) {
+        return MediaUtil.parsePolicy(policy, isVideo);
     }
 
-    private boolean shouldRestartForKey(String key) {
-        return Objects.equals(key, ATTR_DECODE_WIDTH)
-                || Objects.equals(key, ATTR_DECODE_HEIGHT)
-                || Objects.equals(key, ATTR_MAX_FPS)
-                || Objects.equals(key, ATTR_DROP_FRAMES);
+    private static HlsMasterPlaylist.Policy parseHlsPolicy(String policy) {
+        return MediaUtil.parseHlsPolicy(policy, true);
     }
 
     private void syncPauseClock(long nowMs) {
@@ -307,23 +260,12 @@ public class Video extends Element {
         lastPaused = paused;
     }
 
-    private static boolean isRemoteUrl(String url) {
-        if (url == null) return false;
-        String v = url.trim().toLowerCase();
-        return v.startsWith("http://") || v.startsWith("https://")
-                || v.startsWith("rtsp://") || v.startsWith("rtmp://") || v.startsWith("mms://");
+    private static int parseInt(String value, int fallback) {
+        return MediaUtil.parseInt(value, fallback);
     }
 
-    private static HlsMasterPlaylist.Policy parsePolicy(String policy, boolean isVideo) {
-        if (policy == null || policy.isBlank()) {
-            return isVideo ? HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH : HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH;
-        }
-        return switch (policy) {
-            case "lowest", "low", "lowest_bandwidth", "lowest-bandwidth" -> HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH;
-            case "highest_resolution", "highest-resolution", "hires", "resolution", "bestres" -> HlsMasterPlaylist.Policy.HIGHEST_RESOLUTION;
-            case "lowest_resolution", "lowest-resolution", "lores" -> HlsMasterPlaylist.Policy.LOWEST_RESOLUTION;
-            default -> HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH;
-        };
+    private static double parseDouble(String value, double fallback) {
+        return MediaUtil.parseDouble(value, fallback);
     }
 
     private void applyAudioRuntime() {
@@ -344,8 +286,6 @@ public class Video extends Element {
     public void closeMedia() {
         closePlayer();
     }
-
-    // ── Browser-standard media control API ──
 
     @Override
     public void setAttribute(String name, String value) {
@@ -412,8 +352,6 @@ public class Video extends Element {
         applyAudioRuntime();
         fireMediaEvents();
     }
-
-    // ── Media property getters ──
 
     private void syncFromAttributes() {
         String rawSrc = getAttribute(ATTR_SRC);
@@ -600,7 +538,6 @@ public class Video extends Element {
         }
     }
 
-    /** Start or resume playback. Equivalent to setting autoplay=true and paused=false. */
     public void play() {
         autoplay = true;
         paused = false;
@@ -609,13 +546,11 @@ public class Video extends Element {
         setAttribute("paused", "false");
     }
 
-    /** Pause playback. Equivalent to setting paused=true. */
     public void pause() {
         paused = true;
         setAttribute("paused", "true");
     }
 
-    /** Reload the media source from the current src attribute. */
     public void load() {
         mediaEnded = false;
         mediaDurationSecs = -1;
@@ -627,87 +562,95 @@ public class Video extends Element {
         restartPlayer();
     }
 
-    /** Current playback position in seconds, or 0 if unknown. */
     public double getCurrentTime() {
         return mediaCurrentTimeSecs;
     }
 
-    // ── Media property setters ──
-
-    /** Media duration in seconds, or -1 if unknown (maps to NaN in JS). */
-    public double getDuration() {
-        return mediaDurationSecs;
+    private static boolean parseBoolean(String value, boolean fallback) {
+        return MediaUtil.parseBoolean(value, fallback);
     }
 
-    /** Whether playback is currently paused. */
     public boolean isPaused() {
         return paused;
     }
 
-    /** Whether playback has reached the end of the media. */
     public boolean isEnded() {
         return mediaEnded;
     }
 
-    // ── HLS variant selection (callable from JS) ──
-
-    /** HTMLMediaElement readyState: 0=HAVE_NOTHING, 1=HAVE_METADATA, 2=HAVE_CURRENT_DATA, 3=HAVE_FUTURE_DATA, 4=HAVE_ENOUGH_DATA. */
     public int getReadyState() {
         return readyState;
     }
 
-    /** HTMLMediaElement networkState: 0=NETWORK_EMPTY, 1=NETWORK_IDLE, 2=NETWORK_LOADING, 3=NETWORK_NO_SOURCE. */
-    public int getNetworkState() {
-        return networkState;
+    private static double clamp01(double value) {
+        return MediaUtil.clamp01(value);
     }
 
-    /** Current source URL. */
     public String getSrc() {
         return resolvedSrc;
     }
 
-    /** Current volume [0.0, 1.0]. */
     public double getVolume() {
         return volume;
     }
 
-    /** Set volume [0.0, 1.0]. */
     public void setVolume(double v) {
         volume = clamp01(v);
         setAttribute("volume", String.valueOf(volume));
         if (audio != null) audio.setVolume(volume);
     }
 
-    /** Whether audio is muted. */
     public boolean isMuted() {
         return muted;
     }
 
-    /** Set muted state. */
     public void setMuted(boolean m) {
         muted = m;
         setAttribute("muted", m ? "true" : "false");
         if (audio != null) audio.setMuted(m);
     }
 
-    // ── Media event dispatching ──
-
-    /** Whether the media loops. */
     public boolean isLoop() {
         return loop;
     }
 
-    /** Set loop state. */
     public void setLoop(boolean l) {
         loop = l;
         setAttribute("loop", l ? "true" : "false");
     }
 
-    // ── Network options API (callable from JS) ──
-
-    /** Whether autoplay is enabled. */
     public boolean isAutoplay() {
         return autoplay;
+    }
+
+    private static String normalizePreload(String value) {
+        return MediaUtil.normalizePreload(value);
+    }
+
+    private static String normalizeAttr(String name) {
+        return MediaUtil.normalizeAttr(name);
+    }
+
+    private boolean isTruthyAttr(String name) {
+        return MediaUtil.isTruthyAttr(this, name);
+    }
+
+    private boolean shouldPreload() {
+        return MediaUtil.shouldPreload(autoplay, paused, preload);
+    }
+
+    private boolean shouldRestartForKey(String key) {
+        return MediaUtil.shouldRestartForKey(key);
+    }
+
+    // -1 means unknown (NaN in JS)
+    public double getDuration() {
+        return mediaDurationSecs;
+    }
+
+    // 0=EMPTY 1=IDLE 2=LOADING 3=NO_SOURCE
+    public int getNetworkState() {
+        return networkState;
     }
 
     private void fireMediaEvents() {
@@ -790,90 +733,55 @@ public class Video extends Element {
         }
     }
 
-    private void dispatchMediaEvent(String type) {
-        try {
-            com.sighs.apricityui.init.Event ev = new com.sighs.apricityui.init.Event(this, type, e -> {}, false);
-            com.sighs.apricityui.init.Event.triggerSingle(ev);
-        } catch (Exception ignored) {
-        }
+    public String hlsHighest(String masterUrl) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH, 8000);
     }
 
-    /** Set a custom User-Agent header for this media element's network streams. */
     public void setUserAgent(String userAgent) {
         networkOptions.put("user_agent", userAgent);
     }
 
-    /** Set custom HTTP headers (FFmpeg format: "Key: value\r\nKey: value"). */
     public void setHeaders(String headers) {
         networkOptions.put("headers", headers);
     }
 
-    private static int parseInt(String value, int fallback) {
-        if (value == null || value.isBlank()) return fallback;
-        try {
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException ignored) {
-            return fallback;
-        }
+    public String hlsHighest(String masterUrl, int timeoutMs) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH, timeoutMs);
     }
 
-    private static double parseDouble(String value, double fallback) {
-        if (value == null || value.isBlank()) return fallback;
-        try {
-            return Double.parseDouble(value.trim());
-        } catch (NumberFormatException ignored) {
-            return fallback;
-        }
+    public String hlsLowest(String masterUrl) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH, 8000);
     }
 
-    private static boolean parseBoolean(String value, boolean fallback) {
-        if (value == null) return fallback;
-        if (value.isBlank()) return true;
-        String normalized = value.trim().toLowerCase(Locale.ROOT);
-        return "true".equals(normalized) || "1".equals(normalized) || "yes".equals(normalized) || "on".equals(normalized);
+    public String hlsLowest(String masterUrl, int timeoutMs) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, HlsMasterPlaylist.Policy.LOWEST_BANDWIDTH, timeoutMs);
     }
 
-    private static double clamp01(double value) {
-        return Math.max(0, Math.min(1, value));
+    public String hlsSelect(String masterUrl, String policy) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, parseHlsPolicy(policy), 8000);
     }
 
-    private static String normalizePreload(String value) {
-        if (value == null || value.isBlank()) return "auto";
-        String normalized = value.trim().toLowerCase(Locale.ROOT);
-        return switch (normalized) {
-            case "none", "metadata", "auto" -> normalized;
-            default -> "auto";
-        };
+    public String hlsSelect(String masterUrl, String policy, int timeoutMs) {
+        return HlsMasterPlaylist.selectVariantOrSelf(masterUrl, parseHlsPolicy(policy), timeoutMs);
     }
 
-    private static String normalizeAttr(String name) {
-        return name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
+    private void dispatchMediaEvent(String type) {
+        MediaUtil.dispatchMediaEvent(this, type);
     }
 
-    /** Set an arbitrary FFmpeg network option (e.g. "referer", "cookies", "user_agent"). */
     public void setNetworkOption(String key, String value) {
         networkOptions.put(key, value);
     }
 
-    /** Remove all custom network options for this element. */
     public void clearNetworkOptions() {
         networkOptions.clear();
     }
 
-    /** Get a snapshot of current custom network options. */
     public Map<String, String> getNetworkOptions() {
         return new HashMap<>(networkOptions);
     }
 
     private String resolveHlsForVideo(String url) {
-        String policy = hlsPolicy;
-        if (policy == null || policy.isBlank() || "auto".equals(policy)) {
-            // Default: video prefers best quality.
-            return HlsMasterPlaylist.selectVariantOrSelf(url, HlsMasterPlaylist.Policy.HIGHEST_BANDWIDTH, networkTimeoutMs);
-        }
-        if ("off".equals(policy) || "disabled".equals(policy) || "none".equals(policy)) {
-            return url;
-        }
-        return HlsMasterPlaylist.selectVariantOrSelf(url, parsePolicy(policy, true), networkTimeoutMs);
+        return MediaUtil.resolveHls(url, hlsPolicy, networkTimeoutMs, true);
     }
 }

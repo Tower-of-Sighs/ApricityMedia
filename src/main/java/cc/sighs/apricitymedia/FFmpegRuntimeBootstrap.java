@@ -192,9 +192,9 @@ public final class FFmpegRuntimeBootstrap {
     private static void prepareDownloaderRuntime() throws Exception {
         String platform = resolvePlatformClassifier();
         Path runtimeDir = FMLLoader.getGamePath()
-                                   .resolve(".apricityui-video")
-                                   .resolve("runtime")
-                                   .resolve(FFMPEG_VERSION);
+                .resolve(".apricityui-video")
+                .resolve("runtime")
+                .resolve(FFMPEG_VERSION);
         Files.createDirectories(runtimeDir);
 
         String javacppBaseName = "javacpp-" + JAVACPP_VERSION + ".jar";
