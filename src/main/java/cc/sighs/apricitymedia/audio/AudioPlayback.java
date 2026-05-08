@@ -141,6 +141,11 @@ public final class AudioPlayback implements AutoCloseable {
     private void decodeLoop() {
         byte[] decodeBuffer = new byte[32 * 1024];
         try (IAudioDecoder decoder = FFmpegRuntimeBootstrap.createAudioDecoder(source, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions)) {
+            if (decoder == null) {
+                formatReady.countDown();
+                LOGGER.error("Audio decoder creation returned null for source={}", source);
+                return;
+            }
             mediaDurationMs = decoder.getDurationMs();
             audioFormat = new AudioFormat(
                     decoder.outSampleRate(), 16, decoder.outChannels(), true, false);

@@ -11,6 +11,9 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 public final class BilibiliLiveUtil {
     private static final Logger LOGGER = LoggerFactory.getLogger(BilibiliLiveUtil.class);
@@ -20,6 +23,7 @@ public final class BilibiliLiveUtil {
     private static final String REFERER = "https://live.bilibili.com/";
     private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
     private static final int TIMEOUT_MS = 8000;
+    private static final ConcurrentMap<String, List<String>> URL_GROUP_CACHE = new ConcurrentHashMap<>();
 
     private BilibiliLiveUtil() {
     }
@@ -29,31 +33,92 @@ public final class BilibiliLiveUtil {
     }
 
     public static String getPlayUrl(String roomId, int qn) {
-        if (roomId == null || roomId.isBlank()) return null;
+        List<String> urls = getPlayUrls(roomId, qn);
+        return urls.isEmpty() ? null : urls.get(0);
+    }
+
+    public static List<String> getPlayUrls(String roomId) {
+        return getPlayUrls(roomId, 10000);
+    }
+
+    public static List<String> getPlayUrls(String roomId, int qn) {
+        if (roomId == null || roomId.isBlank()) return List.of();
 
         long realRoomId = resolveRoomId(roomId.trim());
-        if (realRoomId <= 0) return null;
+        if (realRoomId <= 0) return List.of();
 
         JsonObject resp = httpGet(API_PLAY_URL + "?cid=" + realRoomId + "&qn=" + qn + "&platform=web");
-        if (resp == null) return null;
+        if (resp == null) return List.of();
 
         try {
-            if (resp.get("code").getAsInt() != 0) return null;
+            if (resp.get("code").getAsInt() != 0) return List.of();
             JsonArray durl = resp.getAsJsonObject("data").getAsJsonArray("durl");
-            if (durl == null || durl.isEmpty()) return null;
+            if (durl == null || durl.isEmpty()) return List.of();
 
-            for (JsonElement el : durl) {
-                JsonObject entry = el.getAsJsonObject();
-                String url = entry.get("url").getAsString();
-                if (url != null && !url.isBlank()) {
-                    return url.replace("\\u0026", "&");
-                }
-            }
-            return null;
+            List<String> candidates = collectCandidates(durl);
+            registerUrlGroup(candidates);
+            return candidates;
         } catch (Exception e) {
             LOGGER.error("Bilibili playUrl parse error for room={}", realRoomId, e);
-            return null;
+            return List.of();
         }
+    }
+
+    /**
+     * Given any URL from a previously resolved Bilibili group, return an ordered
+     * fallback chain starting from that URL and continuing with remaining candidates.
+     */
+    public static List<String> getFallbackChain(String resolvedUrl) {
+        if (resolvedUrl == null || resolvedUrl.isBlank()) return List.of();
+        List<String> chain = URL_GROUP_CACHE.get(resolvedUrl);
+        if (chain == null || chain.isEmpty()) return List.of(resolvedUrl);
+        return chain;
+    }
+
+    private static List<String> collectCandidates(JsonArray durl) {
+        Set<String> ordered = new LinkedHashSet<>();
+        for (JsonElement el : durl) {
+            if (el == null || !el.isJsonObject()) continue;
+            JsonObject entry = el.getAsJsonObject();
+
+            String primary = readUrl(entry, "url");
+            if (primary != null) ordered.add(primary);
+
+            JsonElement backupEl = entry.get("backup_url");
+            if (backupEl != null && backupEl.isJsonArray()) {
+                for (JsonElement b : backupEl.getAsJsonArray()) {
+                    if (b == null || b.isJsonNull()) continue;
+                    String backup = decodeUrl(b.getAsString());
+                    if (backup != null) ordered.add(backup);
+                }
+            }
+        }
+        return new ArrayList<>(ordered);
+    }
+
+    private static void registerUrlGroup(List<String> candidates) {
+        if (candidates == null || candidates.isEmpty()) return;
+        int n = candidates.size();
+        for (int i = 0; i < n; i++) {
+            String current = candidates.get(i);
+            if (current == null || current.isBlank()) continue;
+            List<String> chain = new ArrayList<>(n);
+            for (int j = i; j < n; j++) chain.add(candidates.get(j));
+            for (int j = 0; j < i; j++) chain.add(candidates.get(j));
+            URL_GROUP_CACHE.put(current, Collections.unmodifiableList(chain));
+        }
+    }
+
+    private static String readUrl(JsonObject obj, String key) {
+        if (obj == null || key == null) return null;
+        JsonElement el = obj.get(key);
+        if (el == null || el.isJsonNull()) return null;
+        return decodeUrl(el.getAsString());
+    }
+
+    private static String decodeUrl(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        return raw.replace("\\u0026", "&");
     }
 
     private static long resolveRoomId(String roomId) {

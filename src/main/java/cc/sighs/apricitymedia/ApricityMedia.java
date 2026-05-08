@@ -9,6 +9,7 @@ import net.minecraftforge.fml.loading.FMLEnvironment;
 @Mod(ApricityMedia.MOD_ID)
 public class ApricityMedia {
     public static final String MOD_ID = "apricitymedia";
+    public static final String MC_VERSION = "1.20.1";
 
     public static boolean isDev() {
         return !FMLEnvironment.production;

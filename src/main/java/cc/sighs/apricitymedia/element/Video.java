@@ -22,6 +22,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
 import org.lwjgl.system.MemoryUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -32,6 +34,7 @@ import java.util.UUID;
 
 @ElementRegister(Video.TAG_NAME)
 public class Video extends Element {
+    private static final Logger LOGGER = LoggerFactory.getLogger(Video.class);
     public static final String TAG_NAME = "VIDEO";
 
     private static final String ATTR_SRC = "src";
@@ -91,6 +94,8 @@ public class Video extends Element {
     private boolean mediaHasFiredLoadedMetadata = false;
     private boolean mediaHasFiredCanPlay = false;
     private long mediaLastTimeUpdateMs = 0;
+    private static final long RESTART_DEBOUNCE_MS = 120L;
+    private long mediaLastFrameSeenMs = 0;
     private boolean mediaPrevPaused = false;
     private boolean mediaPrevMuted = false;
 
@@ -100,6 +105,16 @@ public class Video extends Element {
     private int frameW = 0;
     private int frameH = 0;
     private double mediaPrevVolume = 1.0;
+    private boolean mediaHasPresentedFrame = false;
+    private long mediaLastPresentedPtsMs = Long.MIN_VALUE;
+    private long diagTickCount = 0;
+    private long diagPresentedCount = 0;
+    private long diagPolledCount = 0;
+    private long diagStarvedCount = 0;
+    private long diagHoldCount = 0;
+    private long diagStartAtMs = 0;
+    private boolean restartPending = false;
+    private long restartDueAtMs = 0;
 
     private final String textureId = UUID.randomUUID().toString().replace("-", "");
 
@@ -201,6 +216,11 @@ public class Video extends Element {
         ensurePlayer();
     }
 
+    private void requestRestart() {
+        restartPending = true;
+        restartDueAtMs = System.currentTimeMillis() + RESTART_DEBOUNCE_MS;
+    }
+
     private static String normalizeHlsPolicy(String value) {
         return MediaUtil.normalizeHlsPolicy(value);
     }
@@ -294,12 +314,12 @@ public class Video extends Element {
         super.setAttribute(name, value);
         if (Objects.equals(key, ATTR_SRC) && !Objects.equals(beforeSrc, getAttribute(ATTR_SRC))) {
             syncFromAttributes();
-            restartPlayer();
+            requestRestart();
             return;
         }
         if (shouldRestartForKey(key)) {
             syncFromAttributes();
-            restartPlayer();
+            requestRestart();
             return;
         }
         if (Objects.equals(key, ATTR_AUTOPLAY) || Objects.equals(key, ATTR_LOOP) || Objects.equals(key, ATTR_PAUSED)
@@ -318,12 +338,12 @@ public class Video extends Element {
         super.removeAttribute(name);
         if (Objects.equals(key, ATTR_SRC) && !Objects.equals(beforeSrc, getAttribute(ATTR_SRC))) {
             syncFromAttributes();
-            restartPlayer();
+            requestRestart();
             return;
         }
         if (shouldRestartForKey(key)) {
             syncFromAttributes();
-            restartPlayer();
+            requestRestart();
             return;
         }
         if (Objects.equals(key, ATTR_AUTOPLAY) || Objects.equals(key, ATTR_LOOP) || Objects.equals(key, ATTR_PAUSED)
@@ -338,10 +358,15 @@ public class Video extends Element {
     @Override
     public void tick() {
         super.tick();
+        long now = System.currentTimeMillis();
 
         if (resolvedSrc.isEmpty()) {
             networkState = 0; // NETWORK_EMPTY
             return;
+        }
+        if (restartPending && now >= restartDueAtMs) {
+            restartPending = false;
+            restartPlayer();
         }
         if (player == null && shouldPreload()) {
             ensurePlayer();
@@ -383,7 +408,8 @@ public class Video extends Element {
         decodeWidth = parseInt(getAttribute(ATTR_DECODE_WIDTH), -1);
         decodeHeight = parseInt(getAttribute(ATTR_DECODE_HEIGHT), -1);
         maxFps = Math.max(0, parseDouble(getAttribute(ATTR_MAX_FPS), 0));
-        dropFrames = parseBoolean(getAttribute(ATTR_DROP_FRAMES), true);
+        // Default to frame-accurate playback to avoid "stall then fast-forward" behavior.
+        dropFrames = parseBoolean(getAttribute(ATTR_DROP_FRAMES), false);
         networkTimeoutMs = Math.max(1000, parseInt(getAttribute(ATTR_NETWORK_TIMEOUT_MS), 15000));
         networkBufferKb = Math.max(64, parseInt(getAttribute(ATTR_NETWORK_BUFFER_KB), 512));
         networkReconnect = parseBoolean(getAttribute(ATTR_NETWORK_RECONNECT), true);
@@ -394,6 +420,9 @@ public class Video extends Element {
         if (player != null) return;
         if (resolvedSrc.isEmpty()) return;
         String selected = resolveHlsForVideo(resolvedSrc);
+        int queueSize = dropFrames ? 6 : 24;
+        LOGGER.info("[ApricityMediaDiag] open player src={}, selected={}, loop={}, dropFrames={}, queueSize={}, decode={}x{}, maxFps={}, networkTimeoutMs={}, networkBufferKb={}, networkReconnect={}",
+                resolvedSrc, selected, loop, dropFrames, queueSize, decodeWidth, decodeHeight, maxFps, networkTimeoutMs, networkBufferKb, networkReconnect);
         player = VideoPlayer.open(
                 selected,
                 loop,
@@ -401,7 +430,7 @@ public class Video extends Element {
                 decodeWidth,
                 decodeHeight,
                 maxFps,
-                dropFrames ? 16 : 64,
+                queueSize,
                 networkTimeoutMs,
                 networkBufferKb,
                 networkReconnect,
@@ -413,6 +442,8 @@ public class Video extends Element {
     private void closePlayer() {
         VideoPlayer oldPlayer = player;
         player = null;
+        restartPending = false;
+        restartDueAtMs = 0;
         closeFrame(currentFrame);
         closeFrame(pendingFrame);
         if (oldPlayer != null) {
@@ -427,6 +458,15 @@ public class Video extends Element {
         pauseAccumulatedMs = 0;
         pausedAtMs = -1;
         lastPaused = false;
+        mediaLastFrameSeenMs = 0;
+        mediaHasPresentedFrame = false;
+        mediaLastPresentedPtsMs = Long.MIN_VALUE;
+        diagTickCount = 0;
+        diagPresentedCount = 0;
+        diagPolledCount = 0;
+        diagStarvedCount = 0;
+        diagHoldCount = 0;
+        diagStartAtMs = 0;
         destroyTexture();
     }
 
@@ -480,43 +520,141 @@ public class Video extends Element {
         long effectiveNow = nowMs - pauseAccumulatedMs;
         VideoFrame toPresent = null;
         boolean hasPresentedFrame = currentFrame != null;
+        long polledThisTick = 0;
+        long holdThisTick = 0;
 
-        while (true) {
-            VideoFrame next = pendingFrame != null ? pendingFrame : player.pollFrame();
-            if (next == null) break;
+        if (player.isRealtimeSource()) {
+            while (true) {
+                VideoFrame next = pendingFrame != null ? pendingFrame : player.pollFrame();
+                if (next == null) break;
+                polledThisTick++;
+                pendingFrame = null;
+                pendingDisplayAtMs = 0;
 
-            if (playbackStartMs < 0) {
-                playbackStartMs = effectiveNow;
-                basePtsMs = next.ptsMs();
+                if (playbackStartMs < 0) {
+                    playbackStartMs = effectiveNow;
+                    basePtsMs = next.ptsMs();
+                }
+
+                long playClockMs = basePtsMs + Math.max(0, effectiveNow - playbackStartMs);
+                long framePtsMs = next.ptsMs();
+                long lateMs = playClockMs - framePtsMs;
+                long earlyMs = framePtsMs - playClockMs;
+
+                if (dropFrames && lateMs > 220) {
+                    closeFrame(next);
+                    continue;
+                }
+
+                if (earlyMs > 24) {
+                    pendingFrame = next;
+                    pendingDisplayAtMs = nowMs + Math.min(earlyMs, 33);
+                    holdThisTick++;
+                    break;
+                }
+
+                if (toPresent != null && dropFrames) {
+                    closeFrame(toPresent);
+                }
+                toPresent = next;
+                if (!dropFrames) break;
             }
 
-            long displayAt = playbackStartMs + Math.max(0, next.ptsMs() - basePtsMs);
-            if (displayAt > effectiveNow) {
-                pendingFrame = next;
-                pendingDisplayAtMs = displayAt;
-                break;
+            if (pendingFrame != null && pendingDisplayAtMs <= nowMs) {
+                toPresent = pendingFrame;
+                pendingFrame = null;
+                pendingDisplayAtMs = 0;
+            }
+        } else {
+
+            while (true) {
+                VideoFrame next = pendingFrame != null ? pendingFrame : player.pollFrame();
+                if (next == null) break;
+                polledThisTick++;
+
+                if (playbackStartMs < 0) {
+                    playbackStartMs = effectiveNow;
+                    basePtsMs = next.ptsMs();
+                }
+
+                long nextPtsForSchedule = next.ptsMs();
+                if (mediaLastPresentedPtsMs != Long.MIN_VALUE && nextPtsForSchedule <= mediaLastPresentedPtsMs) {
+                    nextPtsForSchedule = mediaLastPresentedPtsMs + Math.max(1, next.durationMs());
+                }
+                long displayAt = playbackStartMs + Math.max(0, nextPtsForSchedule - basePtsMs);
+                if (displayAt > effectiveNow) {
+                    pendingFrame = next;
+                    pendingDisplayAtMs = displayAt;
+                    holdThisTick++;
+                    break;
+                }
+
+                pendingFrame = null;
+                pendingDisplayAtMs = 0;
+
+                if (toPresent != null && dropFrames && hasPresentedFrame) {
+                    closeFrame(toPresent);
+                }
+                toPresent = next;
+                if (!dropFrames || !hasPresentedFrame) break;
             }
 
-            pendingFrame = null;
-            pendingDisplayAtMs = 0;
-
-            if (toPresent != null && dropFrames && hasPresentedFrame) {
-                closeFrame(toPresent);
+            if (pendingFrame != null && pendingDisplayAtMs <= effectiveNow) {
+                toPresent = pendingFrame;
+                pendingFrame = null;
+                pendingDisplayAtMs = 0;
             }
-            toPresent = next;
-            if (!dropFrames || !hasPresentedFrame) break;
-        }
-
-        if (pendingFrame != null && pendingDisplayAtMs <= effectiveNow) {
-            toPresent = pendingFrame;
-            pendingFrame = null;
-            pendingDisplayAtMs = 0;
         }
 
         if (toPresent != null) {
+            long pts = toPresent.ptsMs();
+            long monotonicPts = pts;
+            if (mediaLastPresentedPtsMs != Long.MIN_VALUE) {
+                long delta = pts - mediaLastPresentedPtsMs;
+                if (delta < 0) {
+                    monotonicPts = mediaLastPresentedPtsMs + Math.max(1, toPresent.durationMs());
+                }
+            }
+            mediaLastPresentedPtsMs = monotonicPts;
+
+            if (player != null && player.isRealtimeSource() && playbackStartMs >= 0) {
+                long playClockMs = basePtsMs + Math.max(0, effectiveNow - playbackStartMs);
+                long driftMs = monotonicPts - playClockMs;
+                if (driftMs < -500 || driftMs > 500) {
+                    playbackStartMs = effectiveNow - Math.max(0, monotonicPts - basePtsMs);
+                }
+            }
+
             applyFrame(toPresent);
             currentFrame = toPresent;
             document.markDirty(this, Drawer.REPAINT);
+            diagPresentedCount++;
+        } else {
+            diagStarvedCount++;
+        }
+
+        diagTickCount++;
+        diagPolledCount += polledThisTick;
+        diagHoldCount += holdThisTick;
+        long now = System.currentTimeMillis();
+        if (diagStartAtMs == 0) {
+            diagStartAtMs = now;
+        } else if (now - diagStartAtMs >= 1000) {
+            long playClockMs = -1;
+            if (playbackStartMs >= 0) {
+                playClockMs = basePtsMs + Math.max(0, effectiveNow - playbackStartMs);
+            }
+            long presentedPts = mediaLastPresentedPtsMs;
+            long driftMs = (playClockMs >= 0 && presentedPts != Long.MIN_VALUE) ? (presentedPts - playClockMs) : 0;
+            LOGGER.info("[ApricityMediaDiag] render stats src={}, ticks={}, presented={}, starved={}, polled={}, hold={}, pending={}, lastPts={}, playClockMs={}, driftMs={}",
+                    resolvedSrc, diagTickCount, diagPresentedCount, diagStarvedCount, diagPolledCount, diagHoldCount,
+                    (pendingFrame != null), presentedPts, playClockMs, driftMs);
+            diagStartAtMs = now;
+            diagTickCount = 0;
+            diagPresentedCount = 0;
+            diagStarvedCount = 0;
+            diagPolledCount = 0;
+            diagHoldCount = 0;
         }
     }
 
@@ -557,6 +695,9 @@ public class Video extends Element {
         mediaCurrentTimeSecs = 0;
         mediaHasFiredLoadedMetadata = false;
         mediaHasFiredCanPlay = false;
+        mediaHasPresentedFrame = false;
+        mediaLastFrameSeenMs = 0;
+        mediaLastPresentedPtsMs = Long.MIN_VALUE;
         readyState = 0;
         syncFromAttributes();
         restartPlayer();
@@ -659,7 +800,12 @@ public class Video extends Element {
 
         // Track current time from displayed frame
         if (playing && currentFrame != null) {
-            mediaCurrentTimeSecs = currentFrame.ptsMs() / 1000.0;
+            long clockPts = mediaLastPresentedPtsMs != Long.MIN_VALUE
+                    ? mediaLastPresentedPtsMs
+                    : currentFrame.ptsMs();
+            mediaCurrentTimeSecs = clockPts / 1000.0;
+            mediaLastFrameSeenMs = now;
+            mediaHasPresentedFrame = true;
         }
 
         // Update duration when we get it from the player
@@ -718,15 +864,15 @@ public class Video extends Element {
         }
 
         // timeupdate: fire periodically during playback
-        if (playing && (now - mediaLastTimeUpdateMs) >= 250) {
+        if (playing && currentFrame != null && (now - mediaLastTimeUpdateMs) >= 250) {
             dispatchMediaEvent("timeupdate");
             mediaLastTimeUpdateMs = now;
         }
 
         // Detect ended: player exists but no frames arriving and not paused
         if (playing && player != null && currentFrame == null && !mediaEnded) {
-            // Check if we've seen frames before (media actually started)
-            if (mediaLastTimeUpdateMs > 0 || mediaCurrentTimeSecs > 0.01) {
+            // Only emit ended after real frame presentation and a short no-frame grace period.
+            if (mediaHasPresentedFrame && (now - mediaLastFrameSeenMs) > 500L) {
                 mediaEnded = true;
                 dispatchMediaEvent("ended");
             }

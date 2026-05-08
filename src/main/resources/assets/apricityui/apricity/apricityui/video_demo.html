@@ -203,7 +203,7 @@
 </style>
 
 <script>
-  const BILIBILI_ROOM_ID = "22603245";
+  const BILIBILI_ROOM_ID = "544853";
   const NET_AUDIO_SRC = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
 
   const video = document.querySelector("#demoVideo");
@@ -225,7 +225,7 @@
   let activePaused = true;
 
   // ── Pre-configure headers for Bilibili live streams ──
-  // The stream URL is fetched dynamically via ApricityMediaHls.getBilibiliPlayUrl(),
+  // The stream URL list is fetched dynamically via ApricityMediaHls.getBilibiliPlayUrls(),
   // but these headers are applied to the video element for FFmpeg to use.
   video.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36");
 
@@ -242,6 +242,7 @@
           "sec-fetch-mode: cors\r\n" +
           "sec-fetch-site: cross-site"
   );
+
   video.setNetworkOption("reconnect", "1");
   video.setNetworkOption("reconnect_streamed", "1");
   video.setNetworkOption("reconnect_delay_max", "2");
@@ -364,12 +365,24 @@
       localAudio.setAttribute("src", "demo.mp3");
       localAudio.setLoop(true);
       localAudio.play();
-    } else if (mode === MODE_NET_VIDEO) {
+    }
+    // else if (mode === MODE_NET_VIDEO) {
+    //   video.setAttribute("src", NET_VIDEO_SRC);
+    //   applyNetworkAttrs(video);
+    //   video.setMuted(false);
+    //   video.setLoop(false);
+    //   video.play();
+    // }
+    else if (mode === MODE_NET_VIDEO) {
       status.innerText = "正在获取直播流...";
-      var streamUrl = ApricityMediaHls.getBilibiliPlayUrl(BILIBILI_ROOM_ID);
-      if (streamUrl) {
-        console.log("[ApricityMediaDemo] bilibili stream resolved: " + streamUrl);
-        video.setAttribute("src", streamUrl);
+      var streamUrls = ApricityMediaHls.getBilibiliPlayUrls(BILIBILI_ROOM_ID, 10000);
+      if (streamUrls && streamUrls.length > 0) {
+        console.log("[ApricityMediaDemo] bilibili stream count: " + streamUrls.length);
+        for (var i = 0; i < streamUrls.length; i++) {
+          console.log("[ApricityMediaDemo] bilibili stream #" + (i + 1) + ": " + streamUrls[i]);
+        }
+        status.innerText = "获取到 " + streamUrls.length + " 路流，正在打开第 1 路...";
+        video.setAttribute("src", streamUrls[0]);
         applyNetworkAttrs(video);
         video.setMuted(false);
         video.setLoop(false);
@@ -380,7 +393,8 @@
         activeMode = "";
         return;
       }
-    } else if (mode === MODE_NET_AUDIO) {
+    }
+    else if (mode === MODE_NET_AUDIO) {
       netAudio.setAttribute("src", NET_AUDIO_SRC);
       applyNetworkAttrs(netAudio);
       netAudio.setLoop(false);

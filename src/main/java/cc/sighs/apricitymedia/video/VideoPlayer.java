@@ -1,6 +1,7 @@
 package cc.sighs.apricitymedia.video;
 
 import cc.sighs.apricitymedia.FFmpegRuntimeBootstrap;
+import cc.sighs.apricitymedia.util.BilibiliLiveUtil;
 import com.sighs.apricityui.instance.Loader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -8,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 
@@ -24,17 +26,19 @@ public final class VideoPlayer implements AutoCloseable {
     private final int networkBufferKb;
     private final boolean networkReconnect;
     private final Map<String, String> networkOptions;
+    private final boolean realtimeSource;
     private final ExecutorService executor;
     private final BlockingQueue<VideoFrame> frames;
 
     private volatile boolean closed = false;
     private volatile long mediaDurationMs = -1;
 
-    private VideoPlayer(String source, Path cleanupFile, boolean loop, boolean dropWhenFull, int targetWidth, int targetHeight, double maxFps, int queueSize, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect, Map<String, String> networkOptions) {
+    private VideoPlayer(String source, Path cleanupFile, boolean loop, boolean dropWhenFull, boolean realtimeSource, int targetWidth, int targetHeight, double maxFps, int queueSize, int networkTimeoutMs, int networkBufferKb, boolean networkReconnect, Map<String, String> networkOptions) {
         this.source = source;
         this.cleanupFile = cleanupFile;
         this.loop = loop;
         this.dropWhenFull = dropWhenFull;
+        this.realtimeSource = realtimeSource;
         this.targetWidth = targetWidth;
         this.targetHeight = targetHeight;
         this.maxFps = maxFps;
@@ -73,11 +77,23 @@ public final class VideoPlayer implements AutoCloseable {
             LOGGER.warn("VideoPlayer open failed to prepare source={}", resolvedPath);
             return null;
         }
-        return new VideoPlayer(handle.source, handle.cleanupFile, loop, dropWhenFull, targetWidth, targetHeight, maxFps, queueSize, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions);
+        boolean realtimeSource = isRemotePath(handle.source);
+        return new VideoPlayer(handle.source, handle.cleanupFile, loop, dropWhenFull, realtimeSource, targetWidth, targetHeight, maxFps, queueSize, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions);
     }
 
     public VideoFrame pollFrame() {
         return frames.poll();
+    }
+
+    private static List<String> resolveSourceCandidates(String rawSource) {
+        if (rawSource == null || rawSource.isBlank()) return List.of();
+        if (!isRemotePath(rawSource)) return List.of(rawSource);
+        String lower = rawSource.toLowerCase();
+        if (lower.contains("bilivideo.com/live-bvc/")) {
+            List<String> chain = BilibiliLiveUtil.getFallbackChain(rawSource);
+            if (!chain.isEmpty()) return chain;
+        }
+        return List.of(rawSource);
     }
 
     private static boolean isRemotePath(String path) {
@@ -117,31 +133,119 @@ public final class VideoPlayer implements AutoCloseable {
         }
     }
 
+    public boolean isRealtimeSource() {
+        return realtimeSource;
+    }
+
     private void decodeLoop() {
-        try (IVideoDecoder decoder = FFmpegRuntimeBootstrap.createVideoDecoder(source, targetWidth, targetHeight, maxFps, networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions)) {
+        IVideoDecoder created = openDecoderWithFallback();
+        if (created == null) {
+            LOGGER.error("Video decoder creation returned null for source={}", source);
+            return;
+        }
+        try (IVideoDecoder decoder = created) {
+            if (decoder == null) {
+                LOGGER.error("Video decoder creation returned null for source={}", source);
+                return;
+            }
+            LOGGER.info("[ApricityMediaDiag] decoder start source={}, realtime={}, loop={}, dropWhenFull={}, queueCap={}, maxFps={}, netTimeoutMs={}, netBufKb={}, reconnect={}",
+                    source, realtimeSource, loop, dropWhenFull, frames.remainingCapacity() + frames.size(), maxFps, networkTimeoutMs, networkBufferKb, networkReconnect);
             mediaDurationMs = decoder.getDurationMs();
+            int emptyReads = 0;
+            boolean hasDecodedFrame = false;
+            long lastPts = Long.MIN_VALUE;
+            long decodedFrames = 0;
+            long nullReads = 0;
+            long queueFull = 0;
+            long droppedFrames = 0;
+            long discardedFrames = 0;
+            long statAt = System.currentTimeMillis();
+            long lastDecodedSnapshot = 0;
+            long lastNullSnapshot = 0;
+            long lastQueueFullSnapshot = 0;
+            long lastDroppedSnapshot = 0;
+            long lastDiscardedSnapshot = 0;
+            long decodeClockStartMs = -1;
+            long decodeBasePtsMs = Long.MIN_VALUE;
             while (!closed) {
+                int cap = frames.size() + frames.remainingCapacity();
+                int queued = frames.size();
+                if (realtimeSource) {
+                    // Real-time source should not decode infinitely ahead.
+                    // Keep a small headroom so render thread can pull frames steadily.
+                    int nearFull = Math.max(1, cap - 2);
+                    if (queued >= nearFull) {
+                        sleep(3);
+                        continue;
+                    }
+                } else {
+                    if (queued >= Math.max(1, cap - 1)) {
+                        sleep(2);
+                        continue;
+                    }
+                }
                 VideoFrame frame = decoder.readNextFrame();
                 if (frame == null) {
                     if (closed) break;
-                    if (!loop) {
-                        sleep(10);
-                        continue;
+                    emptyReads++;
+                    nullReads++;
+                    if (emptyReads == 12 || emptyReads == 60 || emptyReads % 300 == 0) {
+                        LOGGER.warn("[ApricityMediaDiag] decoder null streak source={}, streak={}, queued={}, lastPts={}",
+                                source, emptyReads, frames.size(), lastPts);
                     }
-                    decoder.rewind();
+                    // Null commonly means temporary starvation (EAGAIN / pool exhaustion), not EOF.
+                    // Only rewind when we are actually near media end.
+                    if (loop && hasDecodedFrame && emptyReads >= 12 && mediaDurationMs > 0) {
+                        long tailMs = mediaDurationMs - lastPts;
+                        if (tailMs <= 500) {
+                            decoder.rewind();
+                            emptyReads = 0;
+                            hasDecodedFrame = false;
+                            lastPts = Long.MIN_VALUE;
+                        }
+                    }
+                    sleep(8);
                     continue;
+                }
+                emptyReads = 0;
+                hasDecodedFrame = true;
+                decodedFrames++;
+                lastPts = frame.ptsMs();
+                if (realtimeSource) {
+                    if (decodeClockStartMs < 0 || decodeBasePtsMs == Long.MIN_VALUE) {
+                        decodeClockStartMs = System.currentTimeMillis();
+                        decodeBasePtsMs = lastPts;
+                    } else {
+                        long expectedWallMs = decodeClockStartMs + Math.max(0, lastPts - decodeBasePtsMs);
+                        long aheadMs = expectedWallMs - System.currentTimeMillis();
+                        if (aheadMs > 24) {
+                            sleep(Math.min(8, aheadMs - 16));
+                        }
+                    }
                 }
 
                 if (!frames.offer(frame)) {
+                    queueFull++;
                     if (dropWhenFull) {
-                        VideoFrame dropped = frames.poll();
-                        if (dropped != null) {
-                            try {
-                                dropped.close();
-                            } catch (Exception ignored) {
+                        if (realtimeSource) {
+                            VideoFrame dropped = frames.poll();
+                            if (dropped != null) {
+                                droppedFrames++;
+                                try {
+                                    dropped.close();
+                                } catch (Exception ignored) {
+                                }
                             }
-                        }
-                        if (!frames.offer(frame)) {
+                            if (!frames.offer(frame)) {
+                                discardedFrames++;
+                                try {
+                                    frame.close();
+                                } catch (Exception ignored) {
+                                }
+                            }
+                        } else {
+                            // For local/VOD playback, preserve timeline continuity and drop the newest frame.
+                            droppedFrames++;
                             try {
                                 frame.close();
                             } catch (Exception ignored) {
@@ -149,26 +253,75 @@ public final class VideoPlayer implements AutoCloseable {
                         }
                     } else {
                         // If we must preserve frames, wait a bit then give up to avoid blocking shutdown.
-                        boolean queued = false;
+                        boolean enqueued = false;
                         for (int i = 0; i < 10 && !closed; i++) {
                             sleep(2);
                             if (frames.offer(frame)) {
-                                queued = true;
+                                enqueued = true;
                                 break;
                             }
                         }
-                        if (!queued) {
+                        if (!enqueued) {
+                            discardedFrames++;
                             try {
                                 frame.close();
                             } catch (Exception ignored) {
                             }
                         }
                     }
+                    if (queueFull == 1 || queueFull % 200 == 0) {
+                        LOGGER.warn("[ApricityMediaDiag] decoder queue full source={}, total={}, droppedTotal={}, discardedTotal={}, queued={}",
+                                source, queueFull, droppedFrames, discardedFrames, frames.size());
+                    }
+                }
+
+                long now = System.currentTimeMillis();
+                if (now - statAt >= 1000) {
+                    long dDecoded = decodedFrames - lastDecodedSnapshot;
+                    long dNull = nullReads - lastNullSnapshot;
+                    long dQueueFull = queueFull - lastQueueFullSnapshot;
+                    long dDropped = droppedFrames - lastDroppedSnapshot;
+                    long dDiscarded = discardedFrames - lastDiscardedSnapshot;
+                    int capNow = frames.size() + frames.remainingCapacity();
+                    LOGGER.info("[ApricityMediaDiag] decoder stats source={}, queued={}/{}, +decoded={}, +null={}, +queueFull={}, +dropped={}, +discarded={}, lastPts={}",
+                            source, frames.size(), capNow, dDecoded, dNull, dQueueFull, dDropped, dDiscarded, lastPts);
+                    statAt = now;
+                    lastDecodedSnapshot = decodedFrames;
+                    lastNullSnapshot = nullReads;
+                    lastQueueFullSnapshot = queueFull;
+                    lastDroppedSnapshot = droppedFrames;
+                    lastDiscardedSnapshot = discardedFrames;
                 }
             }
         } catch (Exception e) {
             LOGGER.error("Video decode loop failed for source={}", source, e);
         }
+    }
+
+    private IVideoDecoder openDecoderWithFallback() {
+        List<String> candidates = resolveSourceCandidates(source);
+        for (int i = 0; i < candidates.size(); i++) {
+            String candidate = candidates.get(i);
+            try {
+                IVideoDecoder decoder = FFmpegRuntimeBootstrap.createVideoDecoder(
+                        candidate, targetWidth, targetHeight, maxFps,
+                        networkTimeoutMs, networkBufferKb, networkReconnect, networkOptions
+                );
+                if (decoder != null) {
+                    if (i > 0) {
+                        LOGGER.warn("Video source unavailable, switched to fallback #{}: {} -> {}",
+                                i + 1, source, candidate);
+                    }
+                    return decoder;
+                }
+            } catch (Exception e) {
+                LOGGER.warn("Video open failed for candidate #{}: {}", i + 1, candidate, e);
+            }
+            if (i < candidates.size() - 1) {
+                LOGGER.warn("Video candidate unavailable, trying next #{} for source={}", i + 2, source);
+            }
+        }
+        return null;
     }
 
     private static void sleep(long ms) {
